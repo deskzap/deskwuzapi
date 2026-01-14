@@ -498,6 +498,7 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	} else {
 		client = whatsmeow.NewClient(deviceStore, nil)
 	}
+	client.LogOwnMessages = true
 
 	// Now we can use the client with the manager
 	clientManager.SetWhatsmeowClient(userID, client)
