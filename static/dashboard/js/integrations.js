@@ -7,9 +7,14 @@ console.log("Integrations script loaded");
 function initIntegrations() {
   const configCard = document.getElementById('integrationsConfig');
   if (configCard) {
-      configCard.addEventListener('click', function() {
-        loadIntegrations();
+      configCard.addEventListener('click', async function() {
+        // Show modal first with loading state, then load data
+        const tbody = document.getElementById('integrationsTableBody');
+        tbody.innerHTML = '<tr><td colspan="6" class="center aligned"><div class="ui active inline loader"></div> Loading integrations...</td></tr>';
         $('#modalIntegrationsList').modal('show');
+        
+        // Now load the actual data
+        await loadIntegrations();
       });
   }
 
@@ -46,6 +51,11 @@ function handleIntegrationTypeChange(type) {
 }
 
 async function loadIntegrations() {
+  const tbody = document.getElementById('integrationsTableBody');
+  // Show loading state
+  tbody.innerHTML = '<tr><td colspan="6" class="center aligned"><div class="ui active inline loader"></div> Loading integrations...</td></tr>';
+  $('#modalIntegrationsList').modal('refresh');
+
   const token = getLocalStorageItem('token');
   const myHeaders = new Headers();
   myHeaders.append('token', token);
@@ -57,8 +67,7 @@ async function loadIntegrations() {
     });
     const result = await response.json();
     
-    const tbody = document.getElementById('integrationsTableBody');
-    tbody.innerHTML = ''; // Clear existing
+    tbody.innerHTML = ''; // Clear loading
     
     // Extract integrations from response (API wraps in data object)
     const integrations = result.data?.integrations || result.integrations || [];
@@ -102,8 +111,14 @@ async function loadIntegrations() {
     } else {
       tbody.innerHTML = '<tr><td colspan="6" class="center aligned">No integrations found</td></tr>';
     }
+    
+    // Refresh modal position after content update
+    $('#modalIntegrationsList').modal('refresh');
+
   } catch (error) {
     console.error('Error loading integrations:', error);
+    tbody.innerHTML = `<tr><td colspan="6" class="center aligned error"><i class="exclamation triangle icon"></i> Failed to load integrations: ${error.message}</td></tr>`;
+    $('#modalIntegrationsList').modal('refresh');
     showError('Failed to load integrations');
   }
 }
