@@ -1,14 +1,14 @@
 :root {
-    --primary-color: #00A884; /* WhatsApp's new brand green */
-    --secondary-color: #008069; /* WhatsApp's darker green */
-    --tertiary-color: #075E54; /* WhatsApp's darkest green */
-    --background-color: #FCF5EB; /* WhatsApp's authentic background */
+    --primary-color: #23c247; /* Verde Deskzap */
+    --secondary-color: #1ca73d; /* Verde médio Deskzap */
+    --tertiary-color: #033300; /* Verde escuro Deskzap */
+    --background-color: #FCF5EB;
     --card-hover-color: #ffffff;
-    --text-color: #111B21; /* WhatsApp's text color */
-    --gradient-start: #00A884;
-    --gradient-end: #008069;
+    --text-color: #111B21;
+    --gradient-start: #23c247;
+    --gradient-end: #1ca73d;
     --message-background: #FFFFFF;
-    --success-green: #00A884;
+    --success-green: #23c247;
 }
 
 body {
@@ -30,7 +30,7 @@ body {
     border-radius: 24px !important;
     margin-bottom: 2em !important;
     box-shadow: 
-        0 20px 40px rgba(0, 168, 132, 0.2),
+        0 20px 40px rgba(35, 194, 71, 0.2),
         inset 0 0 80px rgba(255, 255, 255, 0.15) !important;
     position: relative;
     overflow: hidden;
@@ -239,7 +239,7 @@ body {
 
 .ui.button:hover {
     transform: translateY(-3px) !important;
-    box-shadow: 0 8px 16px rgba(0, 168, 132, 0.2) !important;
+    box-shadow: 0 8px 16px rgba(35, 194, 71, 0.2) !important;
     filter: brightness(0.95);
 }
 
@@ -251,7 +251,7 @@ body {
 
 .ui.form input:focus, .ui.form textarea:focus {
     border-color: var(--primary-color) !important;
-    box-shadow: 0 0 0 3px rgba(0, 168, 132, 0.1) !important;
+    box-shadow: 0 0 0 3px rgba(35, 194, 71, 0.1) !important;
 }
 
 /*
