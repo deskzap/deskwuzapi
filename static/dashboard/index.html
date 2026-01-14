@@ -1465,6 +1465,12 @@
              </div>
           </div>
 
+          <div class="field">
+             <label>Logo URL</label>
+             <input type="url" id="cwLogo" placeholder="https://example.com/logo.png">
+             <small class="text muted">URL da imagem usada como avatar do bot</small>
+          </div>
+
           <div class="ui dividing header">Conversation Settings</div>
 
           <div class="field">
@@ -1502,6 +1508,16 @@
              <input type="number" id="cwDaysLimitImportMessages" value="3">
           </div>
 
+          <div class="ui dividing header">Advanced Settings</div>
+
+          <div class="field">
+             <div class="ui toggle checkbox">
+                  <input type="checkbox" id="cwMergeBrazilContacts">
+                  <label>Merge Brazil Contacts (Handle 9th digit)</label>
+             </div>
+             <small class="text muted">Normaliza números brasileiros com/sem o 9º dígito</small>
+          </div>
+
           <div class="field">
              <label>Ignore Jids (One per line or comma separated)</label>
              <textarea id="cwIgnoreJids" rows="2" placeholder="123456789@s.whatsapp.net"></textarea>
@@ -1511,6 +1527,18 @@
               <div class="ui toggle checkbox">
                   <input type="checkbox" id="cwAutoCreate">
                   <label>Auto Create Inbox (if missing)</label>
+              </div>
+          </div>
+
+          <!-- Webhook URL Display -->
+          <div class="ui info message" id="cwWebhookInfo" style="display: none;">
+              <div class="header">Webhook URL</div>
+              <p>Configure esta URL no Chatwoot como webhook da inbox:</p>
+              <div class="ui action input fluid">
+                  <input type="text" id="cwWebhookUrl" readonly>
+                  <button type="button" class="ui icon button" onclick="copyWebhookUrl()">
+                      <i class="copy icon"></i>
+                  </button>
               </div>
           </div>
           
@@ -1573,7 +1601,7 @@
         <div class="ui divider"></div>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
              <h4 class="ui header" style="margin:0;">Event Log</h4>
-             <button id="btnClearLog" class="ui mini basic button">Clear</button>
+             <button id="btnClearLog" class="ui mini red button">Clear</button>
         </div>
         <div id="socketLog" class="ui segment" style="height: 200px; overflow-y: auto; background: #f9f9f9; font-family: monospace; font-size: 0.9em;">
           <div style="color: grey; text-align: center; margin-top: 80px;">Events will appear here...</div>
@@ -1635,7 +1663,7 @@
       </div>
     </div>
     <div class="actions">
-      <div class="ui cancel button">Close</div>
+      <div class="ui black cancel button">Close</div>
     </div>
   </div>
 

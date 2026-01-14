@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -387,8 +388,20 @@ func (s *server) GetWebhook() http.HandlerFunc {
 			return
 		}
 
-		eventarray := strings.Split(events, ",")
-		wsEventArray := strings.Split(websocket_events, ",")
+		// Handle empty strings - split of empty returns [""] not []
+		var eventarray []string
+		if events != "" {
+			eventarray = strings.Split(events, ",")
+		} else {
+			eventarray = []string{}
+		}
+
+		var wsEventArray []string
+		if websocket_events != "" {
+			wsEventArray = strings.Split(websocket_events, ",")
+		} else {
+			wsEventArray = []string{}
+		}
 
 		response := map[string]interface{}{
 			"webhook":           webhook,
@@ -511,13 +524,20 @@ func (s *server) SetWebhook() http.HandlerFunc {
 	type webhookStruct struct {
 		WebhookURL       string   `json:"webhook"`
 		Events           []string `json:"events"`
-		WebSocketEnabled *bool    `json:"websocket_enabled,omitempty"`
-		WebSocketEvents  []string `json:"websocket_events,omitempty"`
+		WebSocketEnabled *bool    `json:"websocket_enabled"`
+		WebSocketEvents  []string `json:"websocket_events"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		token := r.Context().Value("userinfo").(Values).Get("Token")
+
+		// Read body for logging
+		bodyBytes, _ := io.ReadAll(r.Body)
+		log.Debug().Str("body", string(bodyBytes)).Msg("SetWebhook received")
+
+		// Reset body for decoder
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 		decoder := json.NewDecoder(r.Body)
 		var t webhookStruct
@@ -526,6 +546,13 @@ func (s *server) SetWebhook() http.HandlerFunc {
 			s.Respond(w, r, http.StatusBadRequest, fmt.Errorf("could not decode payload: %v", err))
 			return
 		}
+
+		log.Debug().
+			Str("webhook", t.WebhookURL).
+			Strs("events", t.Events).
+			Interface("ws_enabled", t.WebSocketEnabled).
+			Strs("ws_events", t.WebSocketEvents).
+			Msg("SetWebhook parsed payload")
 
 		webhook := t.WebhookURL
 
@@ -551,9 +578,22 @@ func (s *server) SetWebhook() http.HandlerFunc {
 			wsEnabled = *t.WebSocketEnabled
 		}
 
-		if t.WebSocketEvents != nil {
-			wsEvents = strings.Join(t.WebSocketEvents, ",")
+		// Check if websocket_events was provided in payload (even if empty array)
+		// We detect this by checking the raw JSON
+		wsEventsProvided := bytes.Contains(bodyBytes, []byte(`"websocket_events"`))
+		if wsEventsProvided {
+			if len(t.WebSocketEvents) > 0 {
+				wsEvents = strings.Join(t.WebSocketEvents, ",")
+			} else {
+				wsEvents = "" // Empty means no events
+			}
 		}
+
+		log.Debug().
+			Bool("ws_enabled", wsEnabled).
+			Str("ws_events", wsEvents).
+			Bool("ws_events_provided", wsEventsProvided).
+			Msg("SetWebhook WebSocket config")
 
 		// Build SQL
 		// To support all permutations, let's build the SET clause dynamically.
@@ -567,14 +607,14 @@ func (s *server) SetWebhook() http.HandlerFunc {
 			argCount++
 		}
 
-		// Always update WebSocket config for now as we want to save it
+		// Always update WebSocket config when provided
 		if t.WebSocketEnabled != nil {
 			queryLines = append(queryLines, fmt.Sprintf("websocket_enabled=$%d", argCount))
 			args = append(args, wsEnabled)
 			argCount++
 		}
 
-		if t.WebSocketEvents != nil {
+		if wsEventsProvided {
 			queryLines = append(queryLines, fmt.Sprintf("websocket_events=$%d", argCount))
 			args = append(args, wsEvents)
 			argCount++
@@ -586,6 +626,8 @@ func (s *server) SetWebhook() http.HandlerFunc {
 
 		// Use Rebind to handle $N vs ? placeholders depending on driver
 		query = s.db.Rebind(query)
+
+		log.Debug().Str("query", query).Interface("args", args).Msg("SetWebhook SQL")
 
 		_, err = s.db.Exec(query, args...)
 

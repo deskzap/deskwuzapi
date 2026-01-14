@@ -98,6 +98,9 @@ func (s *server) routes() {
 	s.router.Handle("/session/integrations/{id}", c.Then(s.DeleteIntegrationHandler())).Methods("DELETE")
 	s.router.Handle("/session/integrations/chatwoot/webhook", s.HandleChatwootWebhook()).Methods("POST")
 
+	// Chatwoot webhook with instance name (Evolution API compatible)
+	s.router.Handle("/chatwoot/webhook/{instance}", s.HandleChatwootWebhookByInstance()).Methods("POST")
+
 	s.router.Handle("/session/proxy", c.Then(s.SetProxy())).Methods("POST")
 	s.router.Handle("/session/history", c.Then(s.SetHistory())).Methods("POST")
 

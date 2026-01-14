@@ -84,14 +84,22 @@ func (s *server) CreateIntegrationHandler() http.HandlerFunc {
 				config.URL = req.URL
 			}
 
+			// Get instance name from user
+			var instanceName string
+			nameRow := s.db.QueryRow("SELECT name FROM users WHERE id = ?", txtid)
+			nameRow.Scan(&instanceName)
+			if instanceName == "" {
+				instanceName = req.Name
+			}
+
 			if config.AutoCreate && config.InboxID == 0 {
-				// Construct Webhook URL
+				// Construct Webhook URL - using new format with instance name
 				scheme := "http"
 				if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 					scheme = "https"
 				}
 				baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-				webhookURL := fmt.Sprintf("%s/session/integrations/chatwoot/webhook?integration_id=%d", baseURL, integration.ID)
+				webhookURL := fmt.Sprintf("%s/chatwoot/webhook/%s", baseURL, instanceName)
 
 				inboxID, err := s.CreateChatwootInbox(config, config.InboxName, webhookURL)
 				if err != nil {
@@ -102,6 +110,16 @@ func (s *server) CreateIntegrationHandler() http.HandlerFunc {
 					return
 				}
 				req.Meta["inbox_id"] = inboxID
+				config.InboxID = inboxID
+
+				// Create manager contact (+123456) for connection management
+				contactID, conversationID, err := s.CreateChatwootManagerContact(config, instanceName)
+				if err != nil {
+					log.Warn().Err(err).Msg("Failed to create manager contact, but inbox was created successfully")
+				} else {
+					req.Meta["manager_contact_id"] = contactID
+					req.Meta["manager_conversation_id"] = conversationID
+				}
 
 				// Update Integration with new Meta
 				newMetaBytes, _ := json.Marshal(req.Meta)

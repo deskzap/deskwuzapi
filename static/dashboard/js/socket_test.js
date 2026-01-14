@@ -211,8 +211,12 @@ function fetchSocketConfig() {
         headers: { 'token': token }
     })
     .then(response => response.json())
-    .then(data => {
-        console.log("Socket Config Response:", data);
+    .then(responseData => {
+        console.log("Socket Config Raw Response:", responseData);
+        
+        // Handle nested data structure: { code: 200, success: true, data: {...} }
+        const data = responseData.data || responseData;
+        console.log("Socket Config Data:", data);
         
         currentWebhookData.webhook = data.webhook || "";
         currentWebhookData.events = data.subscribe || [];
@@ -259,6 +263,12 @@ function saveSocketConfig() {
         });
     }
 
+    // If no events selected, default to empty array (will save as empty in DB)
+    // If empty, maybe set to 'All' or keep empty based on preference
+    if (wsEvents.length === 0) {
+        wsEvents = []; // Empty means no events
+    }
+
     const payload = {
         webhook: currentWebhookData.webhook,
         events: currentWebhookData.events,
@@ -266,13 +276,15 @@ function saveSocketConfig() {
         websocket_events: wsEvents
     };
 
+    console.log("Saving WebSocket Config:", payload);
+
     const btn = document.getElementById('btnSaveSocketConfig');
     const msgDiv = document.getElementById('socketConfigMsg');
     
     btn.classList.add('loading');
     
     fetch('/webhook', {
-        method: 'POST', // or PUT? Backend SetWebhook supports POST usually or PUT. lines 50+ of handlers.go imply POST for /webhook? No, routes.go usually POST.
+        method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'token': token
@@ -280,10 +292,12 @@ function saveSocketConfig() {
         body: JSON.stringify(payload)
     })
     .then(response => {
+        console.log("Response status:", response.status);
         if (!response.ok) throw new Error("Failed to save");
         return response.json();
     })
     .then(data => {
+        console.log("Response data:", data);
         msgDiv.innerHTML = '<div class="ui green text">Configuration saved!</div>';
         setTimeout(() => msgDiv.innerHTML = '', 3000);
     })

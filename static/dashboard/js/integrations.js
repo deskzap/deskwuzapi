@@ -129,6 +129,7 @@ function openIntegrationEditor(mode = 'create', data = null) {
   $('#integrationType').dropdown('clear');
   $('#integrationEvents').dropdown('clear');
   document.getElementById('chatwootFields').style.display = 'none';
+  document.getElementById('cwWebhookInfo').style.display = 'none';
   
   document.getElementById('integrationId').value = '';
   document.getElementById('integrationMode').value = mode;
@@ -153,17 +154,29 @@ function openIntegrationEditor(mode = 'create', data = null) {
              document.getElementById('cwInboxName').value = meta.inbox_name || '';
              document.getElementById('cwInboxId').value = meta.inbox_id || '';
              document.getElementById('cwOrganization').value = meta.organization || '';
+             document.getElementById('cwLogo').value = meta.logo || '';
              document.getElementById('cwSignDelimiter').value = meta.sign_delimiter || '\\n';
              document.getElementById('cwDaysLimitImportMessages').value = meta.import_days || 3;
              document.getElementById('cwIgnoreJids').value = meta.ignore_jids || '';
 
              document.getElementById('cwEnabled').checked = meta.enabled !== false;
-             document.getElementById('cwAutoCreate').checked = meta.auto_create !== false; // Default true? or false
+             document.getElementById('cwAutoCreate').checked = meta.auto_create === true;
              document.getElementById('cwSignMessages').checked = meta.sign_messages || false;
              document.getElementById('cwConversationPending').checked = meta.conversation_pending || false;
              document.getElementById('cwReopenConversation').checked = meta.reopen_conversation || false;
              document.getElementById('cwImportContacts').checked = meta.import_contacts || false;
              document.getElementById('cwImportMessages').checked = meta.import_messages || false;
+             document.getElementById('cwMergeBrazilContacts').checked = meta.merge_brazil_contacts || false;
+
+             // Show webhook URL if integration has an ID
+             if (data.id) {
+                 // Get instance name from session storage or use default
+                 const instanceName = getLocalStorageItem('userName') || 'instance';
+                 // New Evolution API compatible URL format
+                 const webhookUrl = `${window.location.origin}/chatwoot/webhook/${instanceName}`;
+                 document.getElementById('cwWebhookUrl').value = webhookUrl;
+                 document.getElementById('cwWebhookInfo').style.display = 'block';
+             }
          } catch(e) { console.error("Error parsing Chatwoot meta", e); }
     }
   }
@@ -246,6 +259,7 @@ async function saveIntegration() {
       const cwInboxName = document.getElementById('cwInboxName').value;
       const cwInboxId = document.getElementById('cwInboxId').value;
       const cwOrganization = document.getElementById('cwOrganization').value;
+      const cwLogo = document.getElementById('cwLogo').value;
       const cwSignMessages = document.getElementById('cwSignMessages').checked;
       const cwSignDelimiter = document.getElementById('cwSignDelimiter').value;
       const cwAutoCreate = document.getElementById('cwAutoCreate').checked;
@@ -255,6 +269,7 @@ async function saveIntegration() {
       const cwImportMessages = document.getElementById('cwImportMessages').checked;
       const cwDaysLimitImportMessages = document.getElementById('cwDaysLimitImportMessages').value;
       const cwIgnoreJids = document.getElementById('cwIgnoreJids').value;
+      const cwMergeBrazilContacts = document.getElementById('cwMergeBrazilContacts').checked;
 
       payload.meta = {
           enabled: cwEnabled,
@@ -264,6 +279,7 @@ async function saveIntegration() {
           inbox_name: cwInboxName,
           inbox_id: cwInboxId ? parseInt(cwInboxId) : 0,
           organization: cwOrganization,
+          logo: cwLogo,
           sign_messages: cwSignMessages,
           sign_delimiter: cwSignDelimiter,
           auto_create: cwAutoCreate,
@@ -272,7 +288,8 @@ async function saveIntegration() {
           import_contacts: cwImportContacts,
           import_messages: cwImportMessages,
           import_days: cwDaysLimitImportMessages ? parseInt(cwDaysLimitImportMessages) : 3,
-          ignore_jids: cwIgnoreJids
+          ignore_jids: cwIgnoreJids,
+          merge_brazil_contacts: cwMergeBrazilContacts
       };
       
       console.log('Sending Chatwoot Payload:', payload);
@@ -376,6 +393,26 @@ async function toggleIntegrationStatus(id, newStatus) {
         console.error("Toggle status error:", e);
         showError("Network error");
         loadIntegrations(); // Reload to reset the checkbox
+    }
+}
+
+// Copy webhook URL to clipboard
+function copyWebhookUrl() {
+    const webhookInput = document.getElementById('cwWebhookUrl');
+    webhookInput.select();
+    webhookInput.setSelectionRange(0, 99999); // For mobile devices
+    
+    try {
+        navigator.clipboard.writeText(webhookInput.value).then(() => {
+            showSuccess('Webhook URL copied to clipboard!');
+        }).catch(err => {
+            // Fallback for older browsers
+            document.execCommand('copy');
+            showSuccess('Webhook URL copied!');
+        });
+    } catch (err) {
+        document.execCommand('copy');
+        showSuccess('Webhook URL copied!');
     }
 }
 

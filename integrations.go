@@ -67,6 +67,18 @@ func (s *server) GetIntegrationByID(integrationID int) (*Integration, error) {
 	return &integration, nil
 }
 
+// GetIntegrationByUserAndType fetches an integration by userID and type
+func (s *server) GetIntegrationByUserAndType(userID string, integrationType string) (*Integration, error) {
+	var integration Integration
+	query := "SELECT * FROM integrations WHERE user_id = ? AND type = ? AND status = 1 ORDER BY created_at DESC LIMIT 1"
+	query = s.db.Rebind(query)
+	err := s.db.Get(&integration, query, userID, integrationType)
+	if err != nil {
+		return nil, err
+	}
+	return &integration, nil
+}
+
 func (s *server) UpdateIntegration(userID string, integrationID int, name, url, token, events string, status bool, meta string) (*Integration, error) {
 	if meta == "" {
 		meta = "{}"
