@@ -25,11 +25,13 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"golang.org/x/net/proxy"
+	"google.golang.org/protobuf/proto"
 )
 
 // db field declaration as *sqlx.DB
@@ -44,7 +46,11 @@ type MyClient struct {
 }
 
 func sendToGlobalWebHook(jsonData []byte, token string, userID string) {
-	jsonDataStr := string(jsonData)
+	var jsonDataObj interface{}
+	// Try to unmarshal to object if possible, otherwise string
+	if err := json.Unmarshal(jsonData, &jsonDataObj); err != nil {
+		jsonDataObj = string(jsonData)
+	}
 
 	instance_name := ""
 	userinfo, found := userinfocache.Get(token)
@@ -55,28 +61,42 @@ func sendToGlobalWebHook(jsonData []byte, token string, userID string) {
 	if *globalWebhook != "" {
 		log.Info().Str("url", *globalWebhook).Msg("Calling global webhook")
 		// Add extra information for the global webhook
-		globalData := map[string]string{
-			"jsonData":     jsonDataStr,
+		globalData := map[string]interface{}{
+			"jsonData":     jsonDataObj,
 			"userID":       userID,
 			"instanceName": instance_name,
 		}
-		callHookWithHmac(*globalWebhook, globalData, userID, globalHMACKeyEncrypted)
+
+		callHookWithHmac(*globalWebhook, globalData, userID, globalHMACKeyEncrypted, nil)
 	}
 }
 
 func sendToUserWebHook(webhookurl string, path string, jsonData []byte, userID string, token string) {
-	sendToUserWebHookWithHmac(webhookurl, path, jsonData, userID, token, nil)
+	sendToUserWebHookWithHmac(webhookurl, path, jsonData, userID, token, nil, nil)
 }
 
-func sendToUserWebHookWithHmac(webhookurl string, path string, jsonData []byte, userID string, token string, encryptedHmacKey []byte) {
+func sendToUserWebHookWithHmac(webhookurl string, path string, jsonData interface{}, userID string, token string, encryptedHmacKey []byte, extraHeaders map[string]string) {
 
 	instance_name := ""
 	userinfo, found := userinfocache.Get(token)
 	if found {
 		instance_name = userinfo.(Values).Get("Name")
 	}
-	data := map[string]string{
-		"jsonData":     string(jsonData),
+
+	// Ensure jsonData is properly handled
+	var jsonDataObj interface{} = jsonData
+	if jsonBytes, ok := jsonData.([]byte); ok {
+		// If passed as bytes, try to unmarshal to object so we can send as nested JSON
+		var obj interface{}
+		if err := json.Unmarshal(jsonBytes, &obj); err == nil {
+			jsonDataObj = obj
+		} else {
+			jsonDataObj = string(jsonBytes)
+		}
+	}
+
+	data := map[string]interface{}{
+		"jsonData":     jsonDataObj,
 		"userID":       userID,
 		"instanceName": instance_name,
 	}
@@ -87,12 +107,18 @@ func sendToUserWebHookWithHmac(webhookurl string, path string, jsonData []byte, 
 		log.Info().Str("url", webhookurl).Msg("Calling user webhook")
 
 		if path == "" {
-			go callHookWithHmac(webhookurl, data, userID, encryptedHmacKey)
+			go callHookWithHmac(webhookurl, data, userID, encryptedHmacKey, extraHeaders)
 		} else {
+			// Convert generic map back to string map for callHookFileWithHmac which handles files (multipart/form-data)
+			// TODO: Update callHookFileWithHmac to support generic map if needed, but for files form-data is standard.
+			// For now, we use the helper to convert back.
+			stringData := convertMapInterfaceToMapString(data)
+
 			// Create a channel to capture the error from the goroutine
 			errChan := make(chan error, 1)
 			go func() {
-				err := callHookFileWithHmac(webhookurl, data, userID, path, encryptedHmacKey)
+				// TODO: Update callHookFileWithHmac to support extraHeaders if needed
+				err := callHookFileWithHmac(webhookurl, stringData, userID, path, encryptedHmacKey)
 				errChan <- err
 			}()
 
@@ -185,8 +211,8 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 		return
 	}
 
-	// Prepare webhook data
-	jsonData, err := json.Marshal(postmap)
+	// Prepare webhook data (for global hooks and rabbit)
+	jsonDataBytes, err := json.Marshal(postmap)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to marshal postmap to JSON")
 		return
@@ -205,12 +231,79 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 		}
 	}
 
-	sendToUserWebHookWithHmac(webhookurl, path, jsonData, mycli.userID, mycli.token, encryptedHmacKey)
+	// 1. Send to Legacy Webhook (if configured)
+	if webhookurl != "" {
+		// Pass postmap directly as interface{} to preserve nested object structure
+		sendToUserWebHookWithHmac(webhookurl, path, postmap, mycli.userID, mycli.token, encryptedHmacKey, nil)
+	}
 
-	// Get global webhook if configured
-	go sendToGlobalWebHook(jsonData, mycli.token, mycli.userID)
+	// 2. Send to Active Integrations
+	integrations, err := mycli.s.GetActiveIntegrations(mycli.userID)
+	if err == nil && len(integrations) > 0 {
+		for _, integration := range integrations {
+			// Check if integration subscribes to this event
+			integrationEvents := strings.Split(integration.Events, ",")
+			if checkIfSubscribedToEvent(integrationEvents, eventType, mycli.userID) {
+				if integration.Type == "chatwoot" {
+					go mycli.s.HandleChatwootEvent(integration, eventType, postmap)
+				} else {
+					headers := make(map[string]string)
+					if integration.Token != "" {
+						headers["Authorization"] = integration.Token
+						headers["X-Integration-Token"] = integration.Token
+					}
 
-	go sendToGlobalRabbit(jsonData, mycli.token, mycli.userID)
+					// Send to integration URL
+					// Pass postmap directly as interface{}
+					sendToUserWebHookWithHmac(integration.URL, path, postmap, mycli.userID, mycli.token, encryptedHmacKey, headers)
+				}
+			}
+		}
+	} else if err != nil {
+		log.Error().Err(err).Msg("Failed to get active integrations")
+	}
+
+	go sendToGlobalWebHook(jsonDataBytes, mycli.token, mycli.userID)
+
+	go sendToGlobalRabbit(jsonDataBytes, mycli.token, mycli.userID)
+
+	// Broadcast to Socket.IO
+	if mycli.s.Socket != nil {
+		shouldBroadcast := true
+
+		// Check Config from Cache
+		if val, found := userinfocache.Get(mycli.token); found {
+			userInfo := val.(Values)
+
+			// Check Enabled
+			if enabledStr := userInfo.Get("WebSocketEnabled"); enabledStr == "false" {
+				shouldBroadcast = false
+			}
+
+			// Check Events
+			if shouldBroadcast {
+				eventsStr := userInfo.Get("WebSocketEvents")
+				if eventsStr != "" && eventsStr != "All" {
+					allowedEvents := strings.Split(eventsStr, ",")
+					if !Find(allowedEvents, "All") && !Find(allowedEvents, postmap["type"].(string)) { // Assuming postmap has "type"
+						// Fallback: postmap usually has "event" or "type" depending on construction.
+						// In sendToUserWebHookWithHmac, jsonData has "type" or "event"?
+						// Actually, `eventType` passed to this func is the key.
+						// Function signature: func (mycli *MyClient) sendEventWithWebHook(path string, jsonData []byte, postmap map[string]interface{}, eventType string)
+
+						// Use eventType argument
+						if !Find(allowedEvents, eventType) {
+							shouldBroadcast = false
+						}
+					}
+				}
+			}
+		}
+
+		if shouldBroadcast {
+			go mycli.s.Socket.BroadcastToInstance(mycli.userID, "events", postmap)
+		}
+	}
 }
 
 func checkIfSubscribedToEvent(subscribedEvents []string, eventType string, userId string) bool {
@@ -1307,6 +1400,42 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			} else if location := evt.Message.GetLocationMessage(); location != nil {
 				messageType = "location"
 				textContent = location.GetName()
+			} else if interactive := evt.Message.GetInteractiveMessage(); interactive != nil {
+				messageType = "interactive"
+				// Handle Interactive Message (e.g. Pix, Buttons)
+				interactiveMap := make(map[string]interface{})
+
+				if header := interactive.GetHeader(); header != nil {
+					interactiveMap["title"] = header.GetTitle()
+					if header.GetSubtitle() != "" {
+						interactiveMap["subtitle"] = header.GetSubtitle()
+					}
+				}
+
+				if body := interactive.GetBody(); body != nil {
+					interactiveMap["body"] = body.GetText()
+					textContent = body.GetText() // Use body as main text content
+				}
+
+				if footer := interactive.GetFooter(); footer != nil {
+					interactiveMap["footer"] = footer.GetText()
+				}
+
+				if nativeFlow := interactive.GetNativeFlowMessage(); nativeFlow != nil {
+					interactiveMap["type"] = "native_flow"
+					buttons := make([]map[string]interface{}, 0)
+					for _, btn := range nativeFlow.GetButtons() {
+						button := map[string]interface{}{
+							"name":   btn.GetName(),
+							"params": btn.GetButtonParamsJSON(),
+						}
+						buttons = append(buttons, button)
+					}
+					interactiveMap["buttons"] = buttons
+				}
+
+				postmap["interactive"] = interactiveMap
+				postmap["interactive_type"] = "native_flow" // Default assumption for Pix
 			}
 
 			// Extract text content for non-reaction and non-delete messages
@@ -1344,6 +1473,63 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 						if textContent == "" {
 							textContent = ":location:"
 						}
+					}
+				}
+			}
+
+			// Extract Quoted Message Info
+			if messageType != "reaction" && messageType != "delete" {
+				var contextInfo *waProto.ContextInfo
+
+				if ext := evt.Message.GetExtendedTextMessage(); ext != nil {
+					contextInfo = ext.GetContextInfo()
+				} else if img := evt.Message.GetImageMessage(); img != nil {
+					contextInfo = img.GetContextInfo()
+				} else if video := evt.Message.GetVideoMessage(); video != nil {
+					contextInfo = video.GetContextInfo()
+				} else if audio := evt.Message.GetAudioMessage(); audio != nil {
+					contextInfo = audio.GetContextInfo()
+				} else if doc := evt.Message.GetDocumentMessage(); doc != nil {
+					contextInfo = doc.GetContextInfo()
+				} else if sticker := evt.Message.GetStickerMessage(); sticker != nil {
+					contextInfo = sticker.GetContextInfo()
+				} else if contact := evt.Message.GetContactMessage(); contact != nil {
+					contextInfo = contact.GetContextInfo()
+				} else if location := evt.Message.GetLocationMessage(); location != nil {
+					contextInfo = location.GetContextInfo()
+				}
+
+				if contextInfo != nil {
+					if contextInfo.GetStanzaID() != "" {
+						replyToMessageID = contextInfo.GetStanzaID()
+
+						// Add quoted message details to webhook payload
+						quotedMsg := make(map[string]interface{})
+						quotedMsg["stanzaId"] = contextInfo.GetStanzaID()
+						quotedMsg["participant"] = contextInfo.GetParticipant()
+
+						if qm := contextInfo.GetQuotedMessage(); qm != nil {
+							if qText := qm.GetConversation(); qText != "" {
+								quotedMsg["type"] = "text"
+								quotedMsg["content"] = qText
+							} else if qExt := qm.GetExtendedTextMessage(); qExt != nil {
+								quotedMsg["type"] = "text"
+								quotedMsg["content"] = qExt.GetText()
+							} else if qImg := qm.GetImageMessage(); qImg != nil {
+								quotedMsg["type"] = "image"
+								quotedMsg["caption"] = qImg.GetCaption()
+							} else if qVideo := qm.GetVideoMessage(); qVideo != nil {
+								quotedMsg["type"] = "video"
+								quotedMsg["caption"] = qVideo.GetCaption()
+							} else if qAudio := qm.GetAudioMessage(); qAudio != nil {
+								quotedMsg["type"] = "audio"
+							} else if qDoc := qm.GetDocumentMessage(); qDoc != nil {
+								quotedMsg["type"] = "document"
+								quotedMsg["caption"] = qDoc.GetCaption()
+								quotedMsg["fileName"] = qDoc.GetFileName()
+							}
+						}
+						postmap["quotedMessage"] = quotedMsg
 					}
 				}
 			}
@@ -1437,6 +1623,39 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		dowebhook = 1
 
 		// Save HistorySync messages to message_history table
+		if evt.Data != nil {
+			// Notify Progress via Webhook/Socket
+			// Evolution API feature: isLatest and progress
+			// Note: whatsmeow evt.Data.Progress might not be directly available in all versions,
+			// checking available fields. Assuming Progress is percentage if available.
+
+			syncData := make(map[string]interface{})
+			syncData["type"] = "HistorySyncProgress"
+			syncData["count"] = len(evt.Data.Conversations)
+			syncData["progress"] = 0                              // evt.Progress not available in this version
+			syncData["isLatest"] = evt.Data.GlobalSettings != nil // Heuristic: GlobalSettings usually comes at end?
+			// Or check if this is the last chunk. For now, sending what we have.
+
+			// Emit progress event if allowed
+			if mycli.s.Socket != nil {
+				userinfo, found := userinfocache.Get(mycli.token)
+				if found {
+					wsEnabled := userinfo.(Values).Get("WebSocketEnabled")
+					wsEvents := userinfo.(Values).Get("WebSocketEvents")
+
+					// Check if enabled (default true if empty logic might handle elsewhere, but we check specific string)
+					if wsEnabled == "true" || wsEnabled == "" {
+						// Check if subscribed to All or specific event
+						if strings.Contains(wsEvents, "All") || strings.Contains(wsEvents, "HistorySync") || strings.Contains(wsEvents, "HistorySyncProgress") {
+							go mycli.s.Socket.BroadcastToInstance(mycli.userID, "events", syncData)
+						}
+					}
+				}
+			}
+
+			// Optional: Send to webhook if configured for specific HistorySync events
+		}
+
 		if evt.Data != nil && evt.Data.Conversations != nil {
 			go func() {
 
@@ -1851,4 +2070,27 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	if dowebhook == 1 {
 		sendEventWithWebHook(mycli, postmap, path)
 	}
+}
+
+// SendText sends a text message
+func (c *MyClient) SendText(phone string, body string) (string, error) {
+	if c.WAClient == nil {
+		return "", fmt.Errorf("client not connected")
+	}
+
+	jid, ok := parseJID(phone)
+	if !ok {
+		return "", fmt.Errorf("invalid phone number")
+	}
+
+	msg := &waProto.Message{
+		Conversation: proto.String(body),
+	}
+
+	resp, err := c.WAClient.SendMessage(context.Background(), jid, msg)
+	if err != nil {
+		return "", err
+	}
+
+	return resp.ID, nil
 }

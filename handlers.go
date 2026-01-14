@@ -347,24 +347,38 @@ func (s *server) Disconnect() http.HandlerFunc {
 }
 
 // Gets WebHook
+// Gets WebHook
 func (s *server) GetWebhook() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		webhook := ""
 		events := ""
+		websocket_enabled := true
+		websocket_events := "All"
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 
-		rows, err := s.db.Query("SELECT webhook,events FROM users WHERE id=$1 LIMIT 1", txtid)
+		// Query updated to fetch websocket config
+		rows, err := s.db.Query("SELECT webhook, events, websocket_enabled, websocket_events FROM users WHERE id=$1 LIMIT 1", txtid)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("could not get webhook: %v", err)))
 			return
 		}
 		defer rows.Close()
 		for rows.Next() {
-			err = rows.Scan(&webhook, &events)
+			var wsEnabled sql.NullBool
+			var wsEvents sql.NullString
+
+			err = rows.Scan(&webhook, &events, &wsEnabled, &wsEvents)
 			if err != nil {
 				s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("could not get webhook: %s", fmt.Sprintf("%s", err))))
 				return
+			}
+
+			if wsEnabled.Valid {
+				websocket_enabled = wsEnabled.Bool
+			}
+			if wsEvents.Valid {
+				websocket_events = wsEvents.String
 			}
 		}
 		err = rows.Err()
@@ -374,8 +388,14 @@ func (s *server) GetWebhook() http.HandlerFunc {
 		}
 
 		eventarray := strings.Split(events, ",")
+		wsEventArray := strings.Split(websocket_events, ",")
 
-		response := map[string]interface{}{"webhook": webhook, "subscribe": eventarray}
+		response := map[string]interface{}{
+			"webhook":           webhook,
+			"subscribe":         eventarray,
+			"websocket_enabled": websocket_enabled,
+			"websocket_events":  wsEventArray,
+		}
 		responseJson, err := json.Marshal(response)
 		if err != nil {
 			s.Respond(w, r, http.StatusInternalServerError, err)
@@ -489,9 +509,12 @@ func (s *server) UpdateWebhook() http.HandlerFunc {
 // SetWebhook sets the webhook URL and events for a user
 func (s *server) SetWebhook() http.HandlerFunc {
 	type webhookStruct struct {
-		WebhookURL string   `json:"webhookurl"`
-		Events     []string `json:"events,omitempty"`
+		WebhookURL       string   `json:"webhook"`
+		Events           []string `json:"events"`
+		WebSocketEnabled *bool    `json:"websocket_enabled,omitempty"`
+		WebSocketEvents  []string `json:"websocket_events,omitempty"`
 	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		txtid := r.Context().Value("userinfo").(Values).Get("Id")
 		token := r.Context().Value("userinfo").(Values).Get("Token")
@@ -500,7 +523,7 @@ func (s *server) SetWebhook() http.HandlerFunc {
 		var t webhookStruct
 		err := decoder.Decode(&t)
 		if err != nil {
-			s.Respond(w, r, http.StatusBadRequest, errors.New("could not decode payload"))
+			s.Respond(w, r, http.StatusBadRequest, fmt.Errorf("could not decode payload: %v", err))
 			return
 		}
 
@@ -518,30 +541,87 @@ func (s *server) SetWebhook() http.HandlerFunc {
 				validEvents = append(validEvents, event)
 			}
 			eventstring = strings.Join(validEvents, ",")
-			if eventstring == "," || eventstring == "" {
-				eventstring = ""
-			}
-
-			// Update both webhook and events
-			_, err = s.db.Exec("UPDATE users SET webhook=$1, events=$2 WHERE id=$3", webhook, eventstring, txtid)
-
-			// Update MyClient if connected - integrated UpdateEvents functionality
-			if len(validEvents) > 0 {
-				clientManager.UpdateMyClientSubscriptions(txtid, validEvents)
-				log.Info().Strs("events", validEvents).Str("user", txtid).Msg("Updated event subscriptions")
-			}
-		} else {
-			// Update only webhook
-			_, err = s.db.Exec("UPDATE users SET webhook=$1 WHERE id=$2", webhook, txtid)
 		}
 
+		// Prepare WebSocket Settings
+		var wsEnabled bool = true
+		var wsEvents string = "All"
+
+		if t.WebSocketEnabled != nil {
+			wsEnabled = *t.WebSocketEnabled
+		}
+
+		if t.WebSocketEvents != nil {
+			wsEvents = strings.Join(t.WebSocketEvents, ",")
+		}
+
+		// Build SQL
+		// To support all permutations, let's build the SET clause dynamically.
+		queryLines := []string{"webhook=$1"}
+		args := []interface{}{webhook}
+		argCount := 2
+
+		if len(t.Events) > 0 {
+			queryLines = append(queryLines, fmt.Sprintf("events=$%d", argCount))
+			args = append(args, eventstring)
+			argCount++
+		}
+
+		// Always update WebSocket config for now as we want to save it
+		if t.WebSocketEnabled != nil {
+			queryLines = append(queryLines, fmt.Sprintf("websocket_enabled=$%d", argCount))
+			args = append(args, wsEnabled)
+			argCount++
+		}
+
+		if t.WebSocketEvents != nil {
+			queryLines = append(queryLines, fmt.Sprintf("websocket_events=$%d", argCount))
+			args = append(args, wsEvents)
+			argCount++
+		}
+
+		args = append(args, txtid) // ID is last
+
+		query := fmt.Sprintf("UPDATE users SET %s WHERE id=$%d", strings.Join(queryLines, ", "), argCount)
+
+		// Use Rebind to handle $N vs ? placeholders depending on driver
+		query = s.db.Rebind(query)
+
+		_, err = s.db.Exec(query, args...)
+
 		if err != nil {
+			log.Error().Err(err).Str("query", query).Msg("Failed to execute SetWebhook update")
 			s.Respond(w, r, http.StatusInternalServerError, errors.New(fmt.Sprintf("could not set webhook: %v", err)))
 			return
 		}
 
+		// Update MyClient
+		if len(t.Events) > 0 {
+			// Recalculate validEvents strictly from t.Events
+			var validEvents []string
+			for _, event := range t.Events {
+				if Find(supportedEventTypes, event) {
+					validEvents = append(validEvents, event)
+				}
+			}
+			if len(validEvents) > 0 {
+				clientManager.UpdateMyClientSubscriptions(txtid, validEvents)
+			}
+		}
+
 		v := updateUserInfo(r.Context().Value("userinfo"), "Webhook", webhook)
-		v = updateUserInfo(v, "Events", eventstring)
+		if len(t.Events) > 0 {
+			v = updateUserInfo(v, "Events", eventstring)
+		}
+
+		// We should also update userinfo with WebSocket config
+		if t.WebSocketEnabled != nil {
+			v = updateUserInfo(v, "WebSocketEnabled", fmt.Sprintf("%v", *t.WebSocketEnabled))
+		}
+		if len(t.WebSocketEvents) > 0 {
+			v = updateUserInfo(v, "WebSocketEvents", wsEvents)
+		}
+
 		userinfocache.Set(token, v, cache.NoExpiration)
 
 		response := map[string]interface{}{"webhook": webhook}

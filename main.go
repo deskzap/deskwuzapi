@@ -41,6 +41,7 @@ type server struct {
 	router *mux.Router
 	exPath string
 	mode   ServerMode
+	Socket *SocketServer
 }
 
 // Replace the global variables
@@ -421,7 +422,12 @@ func main() {
 		db:     db,
 		exPath: exPath,
 		mode:   serverMode,
+		Socket: NewSocketServer(db),
 	}
+
+	go s.Socket.Server.Serve()
+	defer s.Socket.Server.Close()
+
 	s.routes()
 
 	s.connectOnStartup()

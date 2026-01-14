@@ -70,6 +70,21 @@ var migrations = []Migration{
 		Name:  "add_data_json",
 		UpSQL: addDataJsonSQL,
 	},
+	{
+		ID:    9,
+		Name:  "create_integrations_table",
+		UpSQL: createIntegrationsTableSQL,
+	},
+	{
+		ID:    10,
+		Name:  "add_integrations_meta",
+		UpSQL: addIntegrationsMetaSQL,
+	},
+	{
+		ID:    11,
+		Name:  "add_websocket_config",
+		UpSQL: addWebSocketConfigSQL,
+	},
 }
 
 const changeIDToStringSQL = `
@@ -212,6 +227,38 @@ BEGIN
 END $$;
 
 -- SQLite version (handled in code)
+`
+
+const createIntegrationsTableSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'integrations') THEN
+        CREATE TABLE integrations (
+            id SERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            url TEXT NOT NULL,
+            token TEXT DEFAULT '',
+            events TEXT NOT NULL DEFAULT '',
+            status BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX idx_integrations_user_id ON integrations (user_id);
+    END IF;
+END $$;
+`
+
+const addIntegrationsMetaSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'integrations' AND column_name = 'meta') THEN
+        ALTER TABLE integrations ADD COLUMN meta TEXT DEFAULT '{}';
+    END IF;
+END $$;
 `
 
 // GenerateRandomID creates a random string ID
@@ -435,6 +482,42 @@ func applyMigration(db *sqlx.DB, migration Migration) error {
 		} else {
 			_, err = tx.Exec(migration.UpSQL)
 		}
+	} else if migration.ID == 9 {
+		if db.DriverName() == "sqlite" {
+			err = createTableIfNotExistsSQLite(tx, "integrations", `
+				CREATE TABLE integrations (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					user_id TEXT NOT NULL,
+					name TEXT NOT NULL,
+					type TEXT NOT NULL,
+					url TEXT NOT NULL,
+					token TEXT DEFAULT '',
+					events TEXT NOT NULL DEFAULT '',
+					status BOOLEAN DEFAULT 1,
+					created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+					updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`)
+			if err == nil {
+				_, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_integrations_user_id ON integrations (user_id)`)
+			}
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 10 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "integrations", "meta", "TEXT DEFAULT '{}'")
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
+	} else if migration.ID == 11 {
+		if db.DriverName() == "sqlite" {
+			err = addColumnIfNotExistsSQLite(tx, "users", "websocket_enabled", "BOOLEAN DEFAULT 1")
+			if err == nil {
+				err = addColumnIfNotExistsSQLite(tx, "users", "websocket_events", "TEXT DEFAULT 'All'")
+			}
+		} else {
+			_, err = tx.Exec(migration.UpSQL)
+		}
 	} else {
 		_, err = tx.Exec(migration.UpSQL)
 	}
@@ -645,4 +728,17 @@ BEGIN
 END $$;
 
 -- SQLite version (handled in code)
+`
+
+const addWebSocketConfigSQL = `
+-- PostgreSQL version
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'websocket_enabled') THEN
+        ALTER TABLE users ADD COLUMN websocket_enabled BOOLEAN DEFAULT TRUE;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'websocket_events') THEN
+        ALTER TABLE users ADD COLUMN websocket_events TEXT DEFAULT 'All';
+    END IF;
+END $$;
 `

@@ -51,3 +51,9 @@ RUN chmod +x /app/wuzapi && \
     chown -R root:root /app
 
 ENTRYPOINT ["/app/wuzapi", "--logtype=console", "--color=true"]
+
+LABEL org.opencontainers.image.title="DeskWuzapi" \
+      org.opencontainers.image.description="REST API for WhatsApp by Deskzap Automações" \
+      org.opencontainers.image.vendor="Deskzap Automações" \
+      org.opencontainers.image.authors="Alex Souza <contato@deskzap.com.br>" \
+      org.opencontainers.image.url="https://www.deskzap.com.br"

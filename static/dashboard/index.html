@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WuzAPI</title>
+  <title>DeskWuzapi</title>
+  <link rel="icon" href="../favicon-deskzap.ico" type="image/x-icon">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.4/dist/semantic.min.css">
   <link rel="stylesheet" href="css/app.css">
 </head>
@@ -16,7 +17,7 @@
         <div class="content">
           <div class="center aligned mb-4">
             <i class="whatsapp icon bi-whatsapp"></i> 
-            <h2 class="ui header">WuzAPI Manager</h2>
+            <h2 class="ui header">DeskWuzapi Manager</h2>
             <p class="text-muted">Log in to access the dashboard</p>
           </div>
           <form id="loginForm" class="ui form mb-4">
@@ -56,7 +57,7 @@
     <div class="ui container fluid secondary pointing">
       <a href="#" class="header item">
         <span class='title-container'>
-          <i class="whatsapp icon"></i> WuzAPI Manager
+          <i class="whatsapp icon"></i> DeskWuzapi Manager
         </span>
       </a>
       <div class="right menu">
@@ -139,6 +140,20 @@
           <div class="description">Configure webhook URL and event subscriptions.</div>
         </div>
       </div>
+      <div class="purple card hidden widget" style="cursor: pointer;" id="integrationsConfig">
+        <div class="content"><a class="ui purple right ribbon label">Config</a>
+          <div class="header">Integrations</div>
+          <div class="description">Manage external integrations (n8n, Chatwoot, etc).</div>
+        </div>
+      </div>
+      <div class="purple card hidden widget" style="cursor: pointer;" id="socketConfig">
+        <div class="content"><a class="ui purple right ribbon label">Beta</a>
+          <div class="header">Socket.IO</div>
+          <div class="description">Real-time WebSocket debugger and testing.</div>
+        </div>
+      </div>
+
+
       <div class="purple card hidden widget" style="cursor: pointer;" id="historyConfig">
         <div class="content"><a class="ui purple right ribbon label">Config</a>
           <div class="header">Message History</div>
@@ -559,6 +574,41 @@
       <div class="ui positive right labeled icon button" id="saveHmacConfig">Save<i class="checkmark icon"></i></div>
     </div>
   </div>
+
+  <!-- Integrations List Modal -->
+  <div class="ui modal" id="modalIntegrationsList"><i class="close icon"></i>
+    <div class="header"> Integrations Manager </div>
+    <div class="content">
+      <div class="ui right aligned basic segment">
+        <button class="ui green button" id="btnAddIntegration">
+            <i class="plus icon"></i> Add Integration
+        </button>
+      </div>
+      <table class="ui celled table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>URL</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="integrationsTableBody">
+            <!-- Dynamic Content -->
+        </tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <div class="ui cancel button secondary">Close</div>
+    </div>
+  </div>
+
+  <!-- Integration Editor Modal -->
+
+
+
 
   <!-- Add Instance Modal -->
   <div class="ui large modal" id="addInstanceModal">
@@ -1295,9 +1345,335 @@
     </div>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <!-- Integrations List Modal -->
+  <div class="ui large modal" id="modalIntegrationsList">
+    <i class="close icon"></i>
+    <div class="header">
+      <i class="plug icon"></i>
+      Manage Integrations
+    </div>
+    <div class="content">
+      <button class="ui primary button" id="btnAddIntegration">
+        <i class="plus icon"></i> Add Integration
+      </button>
+      <div class="ui hidden divider"></div>
+      <table class="ui celled table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>URL</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="integrationsTableBody">
+          <!-- Populated by JS -->
+        </tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <div class="ui black deny button">Close</div>
+    </div>
+  </div>
+
+  <!-- Integration Editor Modal -->
+  <div class="ui modal" id="modalIntegrationEditor">
+    <i class="close icon"></i>
+    <div class="header">
+      <i class="edit icon"></i>
+      Integration Details
+    </div>
+    <div class="content">
+      <form class="ui form" id="integrationForm">
+        <input type="hidden" id="integrationId">
+        <input type="hidden" id="integrationMode">
+        
+        <div class="field">
+          <label>Name</label>
+          <input type="text" id="integrationName" placeholder="My Integration" required>
+        </div>
+        
+        <div class="field">
+          <label>Type</label>
+          <div class="ui selection dropdown" id="integrationType">
+            <input type="hidden" name="type">
+            <i class="dropdown icon"></i>
+            <div class="default text">Select Type</div>
+            <div class="menu">
+              <option class="item" data-value="webhook">Webhook (Generic)</option>
+              <option class="item" data-value="n8n">n8n</option>
+              <option class="item" data-value="typebot">Typebot</option>
+              <option class="item" data-value="chatwoot">Chatwoot</option>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>URL</label>
+          <input type="url" id="integrationUrl" placeholder="https://..." required>
+        </div>
+
+        <div class="field">
+          <label>Token / Auth Header (Optional)</label>
+          <input type="text" id="integrationToken" placeholder="Bearer ... or API Key">
+        </div>
+
+        <div class="field">
+          <label>Subscribed Events</label>
+          <div class="ui fluid multiple search selection dropdown" id="integrationEvents">
+            <input type="hidden" name="events">
+            <i class="dropdown icon"></i>
+            <div class="default text">Select Events</div>
+            <div class="menu">
+              <option class="item" data-value="Message">Message</option>
+              <option class="item" data-value="MessageStatus">MessageStatus</option>
+              <option class="item" data-value="Presence">Presence</option>
+              <option class="item" data-value="HistorySync">HistorySync</option>
+              <option class="item" data-value="Group">Group</option>
+              <option class="item" data-value="Call">Call</option>
+              <option class="item" data-value="Qrcode">Qrcode</option>
+              <option class="item" data-value="Loading">Loading</option>
+              <option class="item" data-value="Disconnected">Disconnected</option>
+              <option class="item" data-value="Connecting">Connecting</option>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chatwoot Specific Fields -->
+        <div id="chatwootFields" style="display: none; background: #f9f9f9; padding: 15px; border-radius: 5px; margin-top: 10px;">
+          <h4 class="ui dividing header">Chatwoot Configuration</h4>
+          
+          <div class="two fields">
+             <div class="field">
+               <div class="ui toggle checkbox">
+                  <input type="checkbox" id="cwEnabled" checked>
+                  <label>Enabled</label>
+               </div>
+             </div>
+             <div class="field">
+                <label>Chatwoot URL</label>
+                <input type="url" id="cwUrl" placeholder="https://app.chatwoot.com">
+             </div>
+          </div>
+
+          <div class="two fields">
+              <div class="field">
+                  <label>Account ID</label>
+                  <input type="text" id="cwAccountId" placeholder="1">
+              </div>
+              <div class="field">
+                  <label>User API Token</label>
+                  <input type="text" id="cwToken" placeholder="Chatwoot User Token">
+              </div>
+          </div>
+
+          <div class="two fields">
+             <div class="field">
+                <label>Sign Messages</label>
+                <div class="ui toggle checkbox">
+                    <input type="checkbox" id="cwSignMessages">
+                    <label>Enable</label>
+                </div>
+             </div>
+             <div class="field">
+                <label>Sign Delimiter</label>
+                <input type="text" id="cwSignDelimiter" placeholder="\n">
+             </div>
+          </div>
+
+          <div class="two fields">
+             <div class="field">
+                <label>Inbox Name</label>
+                <input type="text" id="cwInboxName" placeholder="WhatsApp">
+             </div>
+             <div class="field">
+                <label>Organization</label>
+                <input type="text" id="cwOrganization" placeholder="Organization Name">
+             </div>
+          </div>
+
+          <div class="ui dividing header">Conversation Settings</div>
+
+          <div class="field">
+             <div class="ui toggle checkbox">
+                  <input type="checkbox" id="cwConversationPending">
+                  <label>Conversation Pending (Start as pending)</label>
+             </div>
+          </div>
+          <div class="field">
+             <div class="ui toggle checkbox">
+                  <input type="checkbox" id="cwReopenConversation">
+                  <label>Reopen Conversation (When receiving message)</label>
+             </div>
+          </div>
+
+           <div class="ui dividing header">Import Settings</div>
+
+          <div class="two fields">
+             <div class="field">
+                 <div class="ui toggle checkbox">
+                      <input type="checkbox" id="cwImportContacts">
+                      <label>Import Contacts</label>
+                 </div>
+             </div>
+             <div class="field">
+                 <div class="ui toggle checkbox">
+                      <input type="checkbox" id="cwImportMessages">
+                      <label>Import Messages</label>
+                 </div>
+             </div>
+          </div>
+          
+          <div class="field">
+             <label>Days Limit Import Messages</label>
+             <input type="number" id="cwDaysLimitImportMessages" value="3">
+          </div>
+
+          <div class="field">
+             <label>Ignore Jids (One per line or comma separated)</label>
+             <textarea id="cwIgnoreJids" rows="2" placeholder="123456789@s.whatsapp.net"></textarea>
+          </div>
+          
+          <div class="field">
+              <div class="ui toggle checkbox">
+                  <input type="checkbox" id="cwAutoCreate">
+                  <label>Auto Create Inbox (if missing)</label>
+              </div>
+          </div>
+          
+          <!-- Hidden storage for existing Inbox ID -->
+           <input type="hidden" id="cwInboxId">
+        </div>
+
+      </form>
+    </div>
+    <div class="actions">
+       <div class="ui black deny button">Cancel</div>
+       <div class="ui positive right labeled icon button" id="btnSaveIntegration">
+         Save
+         <i class="checkmark icon"></i>
+       </div>
+    </div>
+  </div>
+
+  <!-- Socket.IO Debugger Modal -->
+  <div class="ui modal" id="modalSocketDebugger">
+    <i class="close icon"></i>
+    <div class="header">
+      <i class="bolt icon"></i>
+      Socket.IO Debugger
+    </div>
+    <div class="content">
+      <div class="ui top attached tabular menu">
+        <a class="item active" data-tab="socket-test">Debugger</a>
+        <a class="item" data-tab="socket-config">Configuration</a>
+      </div>
+
+      <!-- Debugger Tab -->
+      <div class="ui bottom attached tab segment active" data-tab="socket-test">
+        <div class="ui grid">
+          <div class="eight wide column">
+            <h4 class="ui header">Connection</h4>
+            <div class="ui segment">
+              <div id="socketStatusLabel" class="ui red label">Disconnected</div>
+              <button id="btnConnectSocket" class="ui green button" style="margin-top: 10px;">Connect</button>
+              <div class="ui divider"></div>
+              <p>Status: <span id="socketStatusText">Idle</span></p>
+            </div>
+          </div>
+          <div class="eight wide column">
+            <h4 class="ui header">Send Message</h4>
+            <div class="ui form">
+              <div class="field">
+                <label>Phone (e.g., 5511999999999)</label>
+                <input type="text" id="socketTestPhone" placeholder="5511999999999">
+              </div>
+              <div class="field">
+                <label>Message</label>
+                <input type="text" id="socketTestMsg" placeholder="Hello World">
+              </div>
+              <button id="btnSocketSend" class="ui blue button">Send</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="ui divider"></div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+             <h4 class="ui header" style="margin:0;">Event Log</h4>
+             <button id="btnClearLog" class="ui mini basic button">Clear</button>
+        </div>
+        <div id="socketLog" class="ui segment" style="height: 200px; overflow-y: auto; background: #f9f9f9; font-family: monospace; font-size: 0.9em;">
+          <div style="color: grey; text-align: center; margin-top: 80px;">Events will appear here...</div>
+        </div>
+      </div>
+
+      <!-- Configuration Tab -->
+      <div class="ui bottom attached tab segment" data-tab="socket-config">
+          <h4 class="ui header"><i class="settings icon"></i> WebSocket Settings</h4>
+          <div class="ui form">
+              <div class="field">
+                  <div class="ui toggle checkbox" id="socketEnabledToggle">
+                      <input type="checkbox" name="websocket_enabled">
+                      <label>Enable WebSocket Events for this Instance</label>
+                  </div>
+                  <small class="ui grey text">If disabled, this instance will not broadcast any events via Socket.IO.</small>
+              </div>
+              
+              <div class="ui divider"></div>
+              
+              <h5 class="ui header">Event Filtering</h5>
+              <p>Select which events you want to receive via WebSocket:</p>
+              
+              <div class="field">
+                  <div class="ui checkbox" id="socketEventAll">
+                      <input type="checkbox" name="ws_event_all" value="All">
+                      <label>All Events</label>
+                  </div>
+              </div>
+              
+              <div id="socketEventList" class="ui five column grid" style="margin-top: 10px;">
+                   <!-- Core Message Events -->
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="Message"><label>Message</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="Receipt"><label>Receipt</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="ChatPresence"><label>ChatPresence</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="Presence"><label>Presence</label></div></div>
+                   <!-- Connection Events -->
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="Connected"><label>Connected</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="Disconnected"><label>Disconnected</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="LoggedOut"><label>LoggedOut</label></div></div>
+                   <!-- Group Events -->
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="GroupInfo"><label>GroupInfo</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="JoinedGroup"><label>JoinedGroup</label></div></div>
+                   <!-- Sync Events -->
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="HistorySync"><label>HistorySync</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="OfflineSyncCompleted"><label>SyncComplete</label></div></div>
+                   <!-- Call Events -->
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="CallOffer"><label>CallOffer</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="CallTerminate"><label>CallEnd</label></div></div>
+                   <!-- QR/Pairing -->
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="QR"><label>QR Code</label></div></div>
+                   <div class="column"><div class="ui checkbox"><input type="checkbox" name="ws_event" value="PairSuccess"><label>PairSuccess</label></div></div>
+              </div>
+              
+              <div class="ui divider"></div>
+              <button id="btnSaveSocketConfig" class="ui primary button">Save Configuration</button>
+              <div id="socketConfigMsg" style="margin-top:10px;"></div>
+          </div>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="ui cancel button">Close</div>
+    </div>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.4/dist/semantic.min.js"></script>
   <script src="js/app.js"></script>
   <script src="js/groups.js"></script>
+  <script src="js/integrations.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.3.0/socket.io.js"></script>
+  <script src="js/socket_test.js"></script>
 </body>
 </html>

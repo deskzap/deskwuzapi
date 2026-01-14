@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WuzAPI Documentation</title>
+    <title>DeskWuzapi Documentation</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github.min.css">
     <style>
@@ -221,8 +221,8 @@
 
     <nav class="sidebar" id="sidebar">
         <div class="nav-header">
-            <img src="/images/favicon.png" alt="WuzAPI Logo" class="logo">
-            <h5 class="mb-0">WuzAPI</h5>
+            <img src="/images/logo-deskzap.svg" alt="DeskWuzapi Logo" class="logo">
+            <h5 class="mb-0">DeskWuzapi</h5>
         </div>
         <div class="nav flex-column">
             <a class="nav-link active" href="#introducao">Introduction</a>
@@ -254,7 +254,7 @@
 
     <main class="content" id="content">
         <div class="top-nav">
-            <h1>WuzAPI Documentation</h1>
+            <h1>DeskWuzapi Documentation</h1>
             <div>
                 <a href="/dashboard" class="dashboard-button me-2">Dashboard</a>
                 <a href="/api" class="dashboard-button">Swagger</a>
@@ -263,7 +263,7 @@
 
         <section id="introducao">
             <p class="lead">
-                WuzAPI is an implementation of the <a href="https://github.com/tulir/whatsmeow" target="_blank">whatsmeow</a> library as a simple RESTful API service with support for multiple devices and concurrent sessions.
+                DeskWuzapi is an implementation of the <a href="https://github.com/tulir/whatsmeow" target="_blank">whatsmeow</a> library as a simple RESTful API service with support for multiple devices and concurrent sessions.
             </p>
             <p>
                 The whatsmeow library does not use Puppeteer in headless Chrome, nor an Android emulator. It communicates directly with WhatsApp's websocket servers, being quite fast and using less memory and CPU than other solutions. The disadvantage is that a change in WhatsApp's protocol could break connections and would require a library update.
@@ -282,7 +282,7 @@
                 </div>
                 <h2 class="mb-0">Authentication</h2>
             </div>
-            <p>WuzAPI offers two authentication methods:</p>
+            <p>DeskWuzapi offers two authentication methods:</p>
             <ul>
                 <li><strong>For regular users:</strong> Use the <code>token</code> header which will be matched with the 'users' table in the database.</li>
                 <li><strong>For administrators:</strong> Use the <code>Authorization</code> header with the administrative token to access protected administration routes.</li>
@@ -307,7 +307,7 @@
                 <h2 class="mb-0">Getting Started</h2>
             </div>
 
-            <p>To start using the WuzAPI API, follow these steps:</p>
+            <p>To start using the DeskWuzapi API, follow these steps:</p>
 
             <ol>
                 <li>
@@ -692,7 +692,7 @@
                 <h2 class="mb-0">Webhook Structure</h2>
             </div>
 
-            <p>When an event occurs, WuzAPI sends a POST request to the configured webhook with the event data. Below are the formats of the main event types:</p>
+            <p>When an event occurs, DeskWuzapi sends a POST request to the configured webhook with the event data. Below are the formats of the main event types:</p>
 
             <h3>Received Message</h3>
             <pre><code class="language-json">{
@@ -735,7 +735,7 @@
 }</code></pre>
 
             <div class="alert alert-info">
-                <strong>Note:</strong> Make sure your webhook server responds to requests with a 200 code in a reasonable time. WuzAPI considers a successful response as confirmation that the event was processed correctly.
+                <strong>Note:</strong> Make sure your webhook server responds to requests with a 200 code in a reasonable time. DeskWuzapi considers a successful response as confirmation that the event was processed correctly.
             </div>
         </section>
 
@@ -1404,7 +1404,7 @@
                 <h2 class="mb-0">Best Practices</h2>
             </div>
 
-            <p>To use the WuzAPI API efficiently and avoid problems, consider these best practices:</p>
+            <p>To use the DeskWuzapi API efficiently and avoid problems, consider these best practices:</p>
 
             <h3>Security</h3>
             <ul>
@@ -1448,7 +1448,7 @@
                     </h2>
                     <div id="collapseOne" class="accordion-collapse collapse show" aria-labelledby="headingOne" data-bs-parent="#faqAccordion">
                         <div class="accordion-body">
-                            Yes, WuzAPI supports multiple instances. Each instance has its own token and can connect to a different WhatsApp number. You can manage all instances through the administrative panel.
+                            Yes, DeskWuzapi supports multiple instances. Each instance has its own token and can connect to a different WhatsApp number. You can manage all instances through the administrative panel.
                         </div>
                     </div>
                 </div>
@@ -1461,7 +1461,7 @@
                     </h2>
                     <div id="collapseTwo" class="accordion-collapse collapse" aria-labelledby="headingTwo" data-bs-parent="#faqAccordion">
                         <div class="accordion-body">
-                            If WhatsApp disconnects your session (for example, when connecting in the app or clicking "Log out from all devices"), you will need to reconnect through the <code>/session/connect</code> endpoint and scan the QR again. WuzAPI does not automatically reconnect in case of forced logout.
+                            If WhatsApp disconnects your session (for example, when connecting in the app or clicking "Log out from all devices"), you will need to reconnect through the <code>/session/connect</code> endpoint and scan the QR again. DeskWuzapi does not automatically reconnect in case of forced logout.
                         </div>
                     </div>
                 </div>

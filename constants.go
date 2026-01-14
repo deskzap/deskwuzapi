@@ -42,6 +42,7 @@ var supportedEventTypes = []string{
 	"AppState",
 	"AppStateSyncComplete",
 	"HistorySync",
+	"HistorySyncProgress",
 	"OfflineSyncCompleted",
 	"OfflineSyncPreview",
 

@@ -48,6 +48,7 @@ func (s *server) routes() {
 	}
 
 	s.router.Handle("/health", s.GetHealth()).Methods("GET")
+	s.router.PathPrefix("/socket.io/").Handler(s.Socket.Server)
 
 	adminRoutes := s.router.PathPrefix("/admin").Subrouter()
 	adminRoutes.Use(s.authadmin)
@@ -90,6 +91,12 @@ func (s *server) routes() {
 	s.router.Handle("/webhook", c.Then(s.GetWebhook())).Methods("GET")
 	s.router.Handle("/webhook", c.Then(s.DeleteWebhook())).Methods("DELETE")
 	s.router.Handle("/webhook", c.Then(s.UpdateWebhook())).Methods("PUT")
+
+	s.router.Handle("/session/integrations", c.Then(s.ListIntegrations())).Methods("GET")
+	s.router.Handle("/session/integrations", c.Then(s.CreateIntegrationHandler())).Methods("POST")
+	s.router.Handle("/session/integrations/{id}", c.Then(s.UpdateIntegrationHandler())).Methods("PUT")
+	s.router.Handle("/session/integrations/{id}", c.Then(s.DeleteIntegrationHandler())).Methods("DELETE")
+	s.router.Handle("/session/integrations/chatwoot/webhook", s.HandleChatwootWebhook()).Methods("POST")
 
 	s.router.Handle("/session/proxy", c.Then(s.SetProxy())).Methods("POST")
 	s.router.Handle("/session/history", c.Then(s.SetHistory())).Methods("POST")

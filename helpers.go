@@ -235,12 +235,12 @@ func updateUserInfo(values interface{}, field string, value string) interface{} 
 }
 
 // webhook for regular messages
-func callHook(myurl string, payload map[string]string, userID string) {
-	callHookWithHmac(myurl, payload, userID, nil)
+func callHook(myurl string, payload map[string]interface{}, userID string) {
+	callHookWithHmac(myurl, payload, userID, nil, nil)
 }
 
 // webhook for regular messages with HMAC
-func callHookWithHmac(myurl string, payload map[string]string, userID string, encryptedHmacKey []byte) {
+func callHookWithHmac(myurl string, payload map[string]interface{}, userID string, encryptedHmacKey []byte, extraHeaders map[string]string) {
 	log.Info().Str("url", myurl).Str("userID", userID).Msg("Sending POST to client with retry logic")
 
 	client := clientManager.GetHTTPClient(userID)
@@ -281,17 +281,10 @@ func callHookWithHmac(myurl string, payload map[string]string, userID string, en
 		if format == "json" {
 			var jsonBody []byte
 
-			if jsonStr, ok := payload["jsonData"]; ok {
-				var postmap map[string]interface{}
-
-				if err := json.Unmarshal([]byte(jsonStr), &postmap); err == nil {
-					if instanceName, ok := payload["instanceName"]; ok {
-						postmap["instanceName"] = instanceName
-					}
-					postmap["userID"] = userID
-					body = postmap
-				}
-			}
+			// Since payload is already a map[string]interface{} containing native objects,
+			// we don't need to try unmarshalling "jsonData" string anymore.
+			// It is already in the structure we want.
+			body = payload
 
 			// Marshal body to JSON for HMAC signature
 			jsonBody, marshalErr = json.Marshal(body)
@@ -315,7 +308,22 @@ func callHookWithHmac(myurl string, payload map[string]string, userID string, en
 			if len(encryptedHmacKey) > 0 {
 				formData := url.Values{}
 				for k, v := range payload {
-					formData.Add(k, v)
+					// Fallback: convert values to string for form-data
+					strVal := ""
+					switch val := v.(type) {
+					case string:
+						strVal = val
+					case []byte:
+						strVal = string(val)
+					default:
+						// If it's a complex object (like jsonData map), marshal it to string
+						if jsonBytes, err := json.Marshal(val); err == nil {
+							strVal = string(jsonBytes)
+						} else {
+							strVal = fmt.Sprintf("%v", val)
+						}
+					}
+					formData.Add(k, strVal)
 				}
 				formString := formData.Encode()
 				var err error
@@ -324,12 +332,17 @@ func callHookWithHmac(myurl string, payload map[string]string, userID string, en
 					log.Error().Err(err).Msg("Failed to generate HMAC signature")
 				}
 			}
-			req = client.R().SetFormData(payload)
+			req = client.R().SetFormData(convertMapInterfaceToMapString(payload))
 			body = payload
 		}
 
 		if hmacSignature != "" {
 			req.SetHeader("x-hmac-signature", hmacSignature)
+		}
+
+		// Set extra headers
+		if extraHeaders != nil {
+			req.SetHeaders(extraHeaders)
 		}
 
 		resp, postErr := req.Post(myurl)
@@ -503,6 +516,26 @@ func callHookFileWithHmac(myurl string, payload map[string]string, userID string
 	}
 
 	return nil
+}
+
+// Helper to convert map[string]interface{} to map[string]string for resty SetFormData
+func convertMapInterfaceToMapString(m map[string]interface{}) map[string]string {
+	res := make(map[string]string)
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			res[k] = val
+		case []byte:
+			res[k] = string(val)
+		default:
+			if jsonBytes, err := json.Marshal(val); err == nil {
+				res[k] = string(jsonBytes)
+			} else {
+				res[k] = fmt.Sprintf("%v", val)
+			}
+		}
+	}
+	return res
 }
 
 func (s *server) respondWithJSON(w http.ResponseWriter, statusCode int, payload interface{}) {

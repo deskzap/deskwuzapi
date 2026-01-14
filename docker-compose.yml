@@ -1,5 +1,7 @@
 services:
-  wuzapi-server:
+  deskwuzapi-server:
+    container_name: deskwuzapi
+    image: deskwuzapi/server:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -27,7 +29,12 @@ services:
       rabbitmq:
         condition: service_healthy
     networks:
-      - wuzapi-network
+      - deskwuzapi-network
+    volumes:
+      - ./static:/app/static
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     restart: on-failure
 
   db:
@@ -41,9 +48,9 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     networks:
-      - wuzapi-network
+      - deskwuzapi-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-wuzapi}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${DB_USER:-wuzapi}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -62,16 +69,16 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
-      - wuzapi-network
+      - deskwuzapi-network
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      test: [ "CMD", "rabbitmq-diagnostics", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: always
 
 networks:
-  wuzapi-network:
+  deskwuzapi-network:
     driver: bridge
 
 volumes:

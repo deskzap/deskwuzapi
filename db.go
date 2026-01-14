@@ -120,6 +120,20 @@ type HistoryMessage struct {
 	DataJson        string    `json:"data_json" db:"datajson"`
 }
 
+type Integration struct {
+	ID        int    `json:"id" db:"id"`
+	UserID    string `json:"user_id" db:"user_id"`
+	Name      string `json:"name" db:"name"`
+	Type      string `json:"type" db:"type"`
+	URL       string `json:"url" db:"url"`
+	Token     string `json:"token" db:"token"`
+	Events    string `json:"events" db:"events"`
+	Status    bool   `json:"status" db:"status"`
+	Meta      string `json:"meta" db:"meta"` // JSON string for extra config
+	CreatedAt string `json:"created_at" db:"created_at"`
+	UpdatedAt string `json:"updated_at" db:"updated_at"`
+}
+
 func (s *server) saveMessageToHistory(userID, chatJID, senderJID, messageID, messageType, textContent, mediaLink, quotedMessageID, dataJson string) error {
 	query := `INSERT INTO message_history (user_id, chat_jid, sender_jid, message_id, timestamp, message_type, text_content, media_link, quoted_message_id, datajson)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
