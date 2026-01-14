@@ -201,13 +201,15 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 
 	// Check if the current event is in the subscriptions
 	checkIfSubscribedInEvent := checkIfSubscribedToEvent(subscribedEvents, postmap["type"].(string), mycli.userID)
-	if !checkIfSubscribedInEvent {
-		return
-	}
+	// if !checkIfSubscribedInEvent {
+	// 	return
+	// }
 
 	// In stdio mode, send as JSON-RPC notification instead of HTTP webhook
 	if mycli.s != nil && mycli.s.mode == Stdio {
-		mycli.s.SendNotification(eventType, postmap)
+		if checkIfSubscribedInEvent {
+			mycli.s.SendNotification(eventType, postmap)
+		}
 		return
 	}
 
@@ -232,7 +234,7 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 	}
 
 	// 1. Send to Legacy Webhook (if configured)
-	if webhookurl != "" {
+	if webhookurl != "" && checkIfSubscribedInEvent {
 		// Pass postmap directly as interface{} to preserve nested object structure
 		sendToUserWebHookWithHmac(webhookurl, path, postmap, mycli.userID, mycli.token, encryptedHmacKey, nil)
 	}

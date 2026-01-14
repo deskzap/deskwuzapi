@@ -2297,6 +2297,26 @@ func (s *server) SendMessage() http.HandlerFunc {
 		s.saveOutgoingMessageToHistory(txtid, recipient.String(), msgid, "text", t.Body, "", historyLimit)
 
 		log.Info().Str("timestamp", fmt.Sprintf("%v", resp.Timestamp)).Str("id", msgid).Msg("Message sent")
+
+		// Trigger webhook for self-sent message
+		go func() {
+			if mycli := clientManager.GetMyClient(txtid); mycli != nil {
+				postmap := make(map[string]interface{})
+				postmap["type"] = "Message"
+				postmap["id"] = msgid
+				postmap["timestamp"] = resp.Timestamp.Unix()
+				if mycli.WAClient != nil && mycli.WAClient.Store != nil && mycli.WAClient.Store.ID != nil {
+					postmap["from"] = mycli.WAClient.Store.ID.String()
+				}
+				postmap["to"] = recipient.String()
+				postmap["fromMe"] = true
+				postmap["content"] = t.Body
+				postmap["source"] = "api"
+
+				sendEventWithWebHook(mycli, postmap, "")
+			}
+		}()
+
 		response := map[string]interface{}{"Details": "Sent", "Timestamp": resp.Timestamp.Unix(), "Id": msgid}
 		responseJson, err := json.Marshal(response)
 		if err != nil {

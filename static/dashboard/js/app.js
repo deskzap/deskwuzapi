@@ -832,7 +832,7 @@ async function setWebhook() {
   res = await fetch(baseUrl + "/webhook", {
     method: "POST",
     headers: myHeaders,
-    body: JSON.stringify({webhookurl: webhook, events: events})
+    body: JSON.stringify({webhook: webhook, events: events})
   });
   data = await res.json();
   return data;
