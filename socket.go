@@ -52,7 +52,12 @@ func NewSocketServer(db *sqlx.DB) *SocketServer {
 		// 1. Check Cache
 		val, found := userinfocache.Get(token)
 		if !found {
-			log.Info().Str("token", token).Msg("Socket auth: Token not found in cache, checking DB")
+			// Security: Mask Token in Logs
+			maskedToken := "hidden"
+			if len(token) > 6 {
+				maskedToken = token[:3] + "..." + token[len(token)-3:]
+			}
+			log.Info().Str("token_mask", maskedToken).Msg("Socket auth: Token not found in cache, checking DB")
 
 			// 2. Check DB (Fallback)
 			if db != nil {
