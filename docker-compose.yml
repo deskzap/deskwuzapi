@@ -1,7 +1,7 @@
 services:
   deskwuzapi-server:
     container_name: deskwuzapi
-    image: deskwuzapi/server:latest
+    image: deskzap/deskwuzapi:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -32,6 +32,7 @@ services:
       - deskwuzapi-network
     volumes:
       - ./static:/app/static
+      - ./.env:/app/.env
     dns:
       - 8.8.8.8
       - 8.8.4.4

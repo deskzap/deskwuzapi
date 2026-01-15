@@ -276,7 +276,14 @@ func callHookWithHmac(myurl string, payload map[string]interface{}, userID strin
 		var hmacSignature string
 		var marshalErr error
 
-		format := os.Getenv("WEBHOOK_FORMAT")
+		// Prefer DESKWUZAPI config, fallback to legacy WUZAPI, default to "json"
+		format := os.Getenv("DESKWUZAPI_WEBHOOK_FORMAT")
+		if format == "" {
+			format = os.Getenv("WEBHOOK_FORMAT")
+		}
+		if format == "" {
+			format = "json"
+		}
 
 		if format == "json" {
 			var jsonBody []byte

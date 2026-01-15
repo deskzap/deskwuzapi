@@ -19,7 +19,7 @@ RUN go mod download
 
 COPY . .
 ENV CGO_ENABLED=1
-RUN go build -o wuzapi
+RUN go build -o deskwuzapi
 
 FROM debian:bullseye-slim
 
@@ -42,18 +42,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV TZ="America/Sao_Paulo"
 WORKDIR /app
 
-COPY --from=builder /app/wuzapi         /app/
+COPY --from=builder /app/deskwuzapi         /app/
 COPY --from=builder /app/static         /app/static/
 COPY --from=builder /app/wuzapi.service /app/wuzapi.service
 
-RUN chmod +x /app/wuzapi && \
+RUN chmod +x /app/deskwuzapi && \
     chmod -R 755 /app && \
     chown -R root:root /app
 
-ENTRYPOINT ["/app/wuzapi", "--logtype=console", "--color=true"]
+ENTRYPOINT ["/app/deskwuzapi", "--logtype=console", "--color=true"]
 
 LABEL org.opencontainers.image.title="DeskWuzapi" \
-      org.opencontainers.image.description="REST API for WhatsApp by Deskzap Automações" \
-      org.opencontainers.image.vendor="Deskzap Automações" \
-      org.opencontainers.image.authors="Alex Souza <contato@deskzap.com.br>" \
-      org.opencontainers.image.url="https://www.deskzap.com.br"
+    org.opencontainers.image.description="REST API for WhatsApp by Deskzap Automações" \
+    org.opencontainers.image.vendor="Deskzap Automações" \
+    org.opencontainers.image.authors="Alex Souza <contato@deskzap.com.br>" \
+    org.opencontainers.image.url="https://www.deskzap.com.br"

@@ -80,7 +80,7 @@ var (
 
 var privateIPBlocks []*net.IPNet
 
-const version = "1.0.5"
+const version = "1.0.3"
 
 func newSafeHTTPClient() *http.Client {
 	return &http.Client{
@@ -144,6 +144,16 @@ func newSafeHTTPClient() *http.Client {
 	}
 }
 
+// getEnv returns the value of the first environment variable that is set.
+func getEnv(keys ...string) string {
+	for _, key := range keys {
+		if val := os.Getenv(key); val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
 func isPrivateOrLoopback(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
@@ -176,14 +186,19 @@ func main() {
 
 	err := godotenv.Load()
 	if err != nil {
-		log.Warn().Err(err).Msg("It was not possible to load the .env file (it may not exist).")
+		// Only warn if we really need .env, otherwise INFO
+		if os.Getenv("DESKWUZAPI_ADMIN_TOKEN") != "" || os.Getenv("WUZAPI_ADMIN_TOKEN") != "" {
+			log.Info().Msg("No .env file found, but environment variables are set. Continuing.")
+		} else {
+			log.Warn().Err(err).Msg("It was not possible to load the .env file (it may not exist).")
+		}
 	}
 
 	flag.Parse()
 
 	// Check for address in environment variable if flag is default or empty
 	if *address == "0.0.0.0" || *address == "" {
-		if v := os.Getenv("WUZAPI_ADDRESS"); v != "" {
+		if v := getEnv("DESKWUZAPI_ADDRESS", "WUZAPI_ADDRESS"); v != "" {
 			*address = v
 			log.Info().Str("address", v).Msg("Address configured from environment variable")
 		}
@@ -191,7 +206,7 @@ func main() {
 
 	// Check for port in environment variable if flag is default or empty
 	if *port == "8080" || *port == "" {
-		if v := os.Getenv("WUZAPI_PORT"); v != "" {
+		if v := getEnv("DESKWUZAPI_PORT", "WUZAPI_PORT"); v != "" {
 			*port = v
 			log.Info().Str("port", v).Msg("Port configured from environment variable")
 		}
@@ -289,7 +304,7 @@ func main() {
 	}
 
 	if *adminToken == "" {
-		if v := os.Getenv("WUZAPI_ADMIN_TOKEN"); v != "" {
+		if v := getEnv("DESKWUZAPI_ADMIN_TOKEN", "WUZAPI_ADMIN_TOKEN"); v != "" {
 			*adminToken = v
 		} else {
 			// Generate a random token if none provided
@@ -304,7 +319,7 @@ func main() {
 	}
 
 	if *globalEncryptionKey == "" {
-		if v := os.Getenv("WUZAPI_GLOBAL_ENCRYPTION_KEY"); v != "" {
+		if v := getEnv("DESKWUZAPI_GLOBAL_ENCRYPTION_KEY", "WUZAPI_GLOBAL_ENCRYPTION_KEY"); v != "" {
 			*globalEncryptionKey = v
 			log.Info().Msg("Encryption key loaded from environment variable")
 		} else {
@@ -315,14 +330,14 @@ func main() {
 				b[i] = charset[rand.Intn(len(charset))]
 			}
 			*globalEncryptionKey = string(b)
-			log.Warn().Str("global_encryption_key", *globalEncryptionKey).Msg("No WUZAPI_GLOBAL_ENCRYPTION_KEY provided, generated a random one. " +
+			log.Warn().Str("global_encryption_key", *globalEncryptionKey).Msg("No DESKWUZAPI_GLOBAL_ENCRYPTION_KEY provided, generated a random one. " +
 				"SAVE THIS KEY TO YOUR .ENV FILE OR ALL ENCRYPTED DATA WILL BE LOST ON RESTART!")
 		}
 	}
 
 	// Check for global webhook in environment variable
 	if *globalWebhook == "" {
-		if v := os.Getenv("WUZAPI_GLOBAL_WEBHOOK"); v != "" {
+		if v := getEnv("DESKWUZAPI_GLOBAL_WEBHOOK", "WUZAPI_GLOBAL_WEBHOOK"); v != "" {
 			*globalWebhook = v
 			log.Info().Str("global_webhook", v).Msg("Global webhook configured from environment variable")
 		}
@@ -332,7 +347,7 @@ func main() {
 
 	// Check for global HMAC key in environment variable
 	if *globalHMACKey == "" {
-		if v := os.Getenv("WUZAPI_GLOBAL_HMAC_KEY"); v != "" {
+		if v := getEnv("DESKWUZAPI_GLOBAL_HMAC_KEY", "WUZAPI_GLOBAL_HMAC_KEY"); v != "" {
 			*globalHMACKey = v
 			log.Info().Msg("Global HMAC key configured from environment variable")
 		} else {
@@ -343,7 +358,7 @@ func main() {
 				b[i] = charset[rand.Intn(len(charset))]
 			}
 			*globalHMACKey = string(b)
-			log.Warn().Str("global_hmac_key", *globalHMACKey).Msg("No WUZAPI_GLOBAL_HMAC_KEY provided, generated a random one")
+			log.Warn().Str("global_hmac_key", *globalHMACKey).Msg("No DESKWUZAPI_GLOBAL_HMAC_KEY provided, generated a random one")
 		}
 
 	} else {
