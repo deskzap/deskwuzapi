@@ -150,74 +150,65 @@ func NewSocketServer(db *sqlx.DB) *SocketServer {
 			return `{"status":"error","error":"` + err.Error() + `"}`
 		}
 
-		// Trigger webhook manually for N8N integration (API-like)
+		// Prepare postmap for events
+		postmap := make(map[string]interface{})
+		postmap["timestamp"] = time.Now().Unix()
+
+		senderJID := "unknown"
+		if client.WAClient != nil && client.WAClient.Store != nil && client.WAClient.Store.ID != nil {
+			senderJID = client.WAClient.Store.ID.String()
+		}
+
+		// Normalizar JID para garantir formato padrão do WhatsApp (@s.whatsapp.net)
+		recipientJID, _ := parseJID(payload.Phone)
+
+		// Use TitleCase keys to match Whatsmeow event structure
+		postmap["Type"] = "Message"
+		postmap["IsFromMe"] = true
+		postmap["Content"] = payload.Message
+		postmap["Source"] = "websocket"
+		postmap["Timestamp"] = time.Now().Unix()
+		postmap["ID"] = resp
+		postmap["To"] = recipientJID.String()
+		postmap["From"] = senderJID
+
+		// Legacy lowercase keys
+		postmap["type"] = "Message"
+		postmap["to"] = recipientJID.String()
+		postmap["fromMe"] = true
+		postmap["content"] = payload.Message
+		postmap["source"] = "websocket"
+		postmap["id"] = resp
+
+		log.Info().Str("msgID", resp).Msg("SOCKET: Sync Prepare")
+
+		// FINAL ATTEMPT: Async Broadcast with Wrapper (Identical to wmiau.go)
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Error().Interface("panic", r).Msg("Panic in Socket manual webhook trigger")
+					log.Error().Interface("panic", r).Msg("Panic in Async Broadcast")
 				}
 			}()
 
-			log.Debug().Str("msgID", resp).Msg("Starting API-like webhook trigger for Socket Message")
-
-			postmap := make(map[string]interface{})
-			postmap["type"] = "Message"
-			postmap["id"] = resp
-			postmap["timestamp"] = time.Now().Unix()
-
-			senderJID := "unknown"
-
-			// Try to get Sender JID safely
-			if client.WAClient != nil && client.WAClient.Store != nil && client.WAClient.Store.ID != nil {
-				senderJID = client.WAClient.Store.ID.ToJID().String()
-			} else {
-				// Fallback to JID from cache/db if available in context or other struct
-				// For now let's prioritize not crashing. "unknown" is better than panic.
+			// 1. Wrapper for 'events' channel (Matches ReadReceipt structure)
+			wrapper := map[string]interface{}{
+				"event": postmap,
+				"type":  "Message",
 			}
 
-			postmap["from"] = senderJID
-			postmap["to"] = payload.Phone // This might need parsing if it's not a JID, but SendText handles formatting inside, payload.Phone usually comes as JID or clean number.
+			log.Info().Msg("SOCKET: Broadcasting to 'events' and 'message' (Async)")
 
-			// Ensure format is JID-like for webhook consistency if possible, but raw is ok if N8N handles it.
-			// Ideally we should parseJID(payload.Phone) to be sure.
+			// Broadcast to 'events' (Confirmed Channel)
+			server.BroadcastToRoom("/", "instance:"+userID, "events", wrapper)
 
-			postmap["fromMe"] = true
-			postmap["content"] = payload.Message
-			postmap["source"] = "websocket"
-
-			// CRITICAL FIX: Ensure client has a token, otherwise webhook fails silently
-			if client.token == "" {
-				log.Warn().Str("userID", userID).Msg("Client token is empty in Socket handler! Attempting recovery from DB...")
-				if db != nil {
-					var recoveredToken string
-					// Ensure we select just the token string
-					err := db.Get(&recoveredToken, "SELECT token FROM users WHERE id=$1", userID)
-					if err == nil && recoveredToken != "" {
-						client.token = recoveredToken
-						log.Info().Str("userID", userID).Msg("Successfully recovered token from DB and injected into Client")
-					} else {
-						log.Error().Err(err).Str("userID", userID).Msg("Failed to recover token from DB")
-					}
-				} else {
-					log.Error().Msg("DB connection is nil in Socket handler, cannot recover token")
-				}
-			}
-
-			log.Debug().Interface("postmap", postmap).Str("token_preview", client.token).Msg("Dispatching direct webhook from Socket with Token Check")
-			sendEventWithWebHook(client, postmap, "")
-
-			// Broadcast to other connected clients (supports external listeners like N8N JS snippet)
-			// Using the socket instance 's' captured from closure.
-			// Is 's' accessible here? 's' is 'socketio.Conn'.
-			// We need 'SocketServer' instance.
-			// Wait, BroadcastToInstance is a method of *SocketServer.
-			// We don't have 'SocketServer' instance variable easily accessible inside the anonymous function passed to OnEvent?
-			// Actually 'server' variable (the socketio.Server) is available.
-			// But BroadcastToInstance is a helper method on our struct.
-			// We can just call server.BroadcastToRoom directly.
-			// Room name is "instance:" + userID
-
+			// Broadcast to 'message' (Target Channel - Flat)
 			server.BroadcastToRoom("/", "instance:"+userID, "message", postmap)
+
+			// Emit back to sender
+			s.Emit("message", postmap)
+
+			// Webhook
+			sendEventWithWebHook(client, postmap, "")
 		}()
 
 		respJSON, _ := json.Marshal(map[string]interface{}{

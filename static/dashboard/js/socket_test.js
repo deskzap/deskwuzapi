@@ -170,7 +170,12 @@ function connectSocket() {
     // Listen for custom events broadcasted from backend
     socket.on('events', (data) => {
         // data might be JSON string or object depending on backend broadcast
-        logSocketEvent('INCOMING', data);
+        logSocketEvent('INCOMING (Event)', data);
+    });
+
+    // CRITICAL: Listen for 'message' event (Standard Broadcast)
+    socket.on('message', (data) => {
+        logSocketEvent('INCOMING (Message)', data);
     });
 }
 

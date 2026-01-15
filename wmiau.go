@@ -166,23 +166,49 @@ func updateAndGetUserSubscriptions(mycli *MyClient) ([]string, error) {
 	return subscribedEvents, nil
 }
 
-func getUserWebhookUrl(token string) string {
-	webhookurl := ""
-	myuserinfo, found := userinfocache.Get(token)
-	if !found {
-		log.Warn().Str("token", token).Msg("Could not call webhook as there is no user for this token")
-	} else {
-		webhookurl = myuserinfo.(Values).Get("Webhook")
+func (mycli *MyClient) GetWebhookURL() string {
+	// 1. Try Cache using Token
+	if mycli.token != "" {
+		if val, found := userinfocache.Get(mycli.token); found {
+			w := val.(Values).Get("Webhook")
+			if w != "" {
+				log.Debug().Str("userID", mycli.userID).Str("sourced_from", "cache").Msg("Webhook URL found in cache")
+				return w
+			}
+		}
 	}
-	return webhookurl
+
+	// 2. Fallback to DB using UserID (Robustness Fix)
+	if mycli.db != nil && mycli.userID != "" {
+		var webhook string
+		query := "SELECT webhook FROM users WHERE id=$1"
+		err := mycli.db.Get(&webhook, query, mycli.userID)
+		if err == nil {
+			log.Debug().Str("userID", mycli.userID).Str("sourced_from", "db").Msg("Webhook URL recovered from DB")
+			return webhook
+		}
+
+		log.Warn().Err(err).Str("userID", mycli.userID).Msg("Failed to get webhook from DB fallback")
+	} else {
+		log.Error().Msg("Cannot get webhook: DB is nil or UserID empty")
+	}
+
+	return ""
 }
 
 func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path string) {
-	webhookurl := getUserWebhookUrl(mycli.token)
+	webhookurl := mycli.GetWebhookURL()
+
+	if webhookurl == "" {
+		log.Error().Str("userID", mycli.userID).Msg("ABORTING Webhook: No URL found in Cache or DB")
+	} else {
+		log.Info().Str("url", webhookurl).Str("type", postmap["type"].(string)).Msg("Preparing to send Webhook")
+	}
 
 	// Get updated events from cache/database
 	subscribedEvents, err := updateAndGetUserSubscriptions(mycli)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to update subscriptions")
 		return
 	}
 
@@ -204,6 +230,10 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 	// if !checkIfSubscribedInEvent {
 	// 	return
 	// }
+
+	if !checkIfSubscribedInEvent {
+		log.Warn().Str("event", eventType).Msg("Webhook blocked by subscription filter")
+	}
 
 	// In stdio mode, send as JSON-RPC notification instead of HTTP webhook
 	if mycli.s != nil && mycli.s.mode == Stdio {
@@ -235,6 +265,7 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 
 	// 1. Send to Legacy Webhook (if configured)
 	if webhookurl != "" && checkIfSubscribedInEvent {
+		log.Info().Str("url", webhookurl).Msg("Invoking sendToUserWebHookWithHmac")
 		// Pass postmap directly as interface{} to preserve nested object structure
 		sendToUserWebHookWithHmac(webhookurl, path, postmap, mycli.userID, mycli.token, encryptedHmacKey, nil)
 	}
@@ -309,6 +340,18 @@ func sendEventWithWebHook(mycli *MyClient, postmap map[string]interface{}, path 
 }
 
 func checkIfSubscribedToEvent(subscribedEvents []string, eventType string, userId string) bool {
+	// Case insensitive check
+	eventTypeLower := strings.ToLower(eventType)
+
+	// Check for "All" or exact match (case insensitive)
+	for _, s := range subscribedEvents {
+		sLower := strings.ToLower(strings.TrimSpace(s))
+		if sLower == "all" || sLower == eventTypeLower {
+			return true
+		}
+	}
+
+	// Legacy explicit check (redundant but kept for safety if Find handles case differently)
 	if !Find(subscribedEvents, eventType) && !Find(subscribedEvents, "All") {
 		log.Warn().
 			Str("type", eventType).
@@ -498,7 +541,6 @@ func (s *server) startClient(userID string, textjid string, token string, subscr
 	} else {
 		client = whatsmeow.NewClient(deviceStore, nil)
 	}
-	client.LogOwnMessages = true
 
 	// Now we can use the client with the manager
 	clientManager.SetWhatsmeowClient(userID, client)
