@@ -64,13 +64,20 @@ func (s *server) routes() {
 	c = c.Append(hlog.NewHandler(routerLog))
 
 	c = c.Append(hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
+		userID := "unknown"
+		if val := r.Context().Value("userinfo"); val != nil {
+			if v, ok := val.(Values); ok {
+				userID = v.Get("Id")
+			}
+		}
+
 		hlog.FromRequest(r).Info().
 			Str("method", r.Method).
 			Stringer("url", r.URL).
 			Int("status", status).
 			Int("size", size).
 			Dur("duration", duration).
-			Str("userid", r.Context().Value("userinfo").(Values).Get("Id")).
+			Str("userid", userID).
 			Msg("Got API Request")
 	}))
 
@@ -97,6 +104,7 @@ func (s *server) routes() {
 	s.router.Handle("/session/integrations/{id}", c.Then(s.UpdateIntegrationHandler())).Methods("PUT")
 	s.router.Handle("/session/integrations/{id}", c.Then(s.DeleteIntegrationHandler())).Methods("DELETE")
 	s.router.Handle("/session/integrations/chatwoot/webhook", s.HandleChatwootWebhook()).Methods("POST")
+	s.router.Handle("/session/integrations/{id}/test", c.Then(s.TestIntegrationHandler())).Methods("POST")
 
 	// Chatwoot webhook with instance name (Evolution API compatible)
 	s.router.Handle("/chatwoot/webhook/{instance}", s.HandleChatwootWebhookByInstance()).Methods("POST")

@@ -8,9 +8,12 @@ import (
 	"strconv"
 	"strings"
 
+	"mime"
+	"path/filepath"
+
 	"github.com/rs/zerolog/log"
 	"go.mau.fi/whatsmeow"
-	waProto "go.mau.fi/whatsmeow/binary/proto"
+	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
@@ -180,10 +183,15 @@ func (s *server) HandleChatwootWebhook() http.HandlerFunc {
 			if content != "" {
 				s.sendTextMessage(client, jid, content)
 			}
-			// Send attachments as links (TODO: download and send as media)
+			// Send attachments
 			for _, att := range payload.Attachments {
-				attachmentMsg := fmt.Sprintf("📎 %s", att.DataURL)
-				s.sendTextMessage(client, jid, attachmentMsg)
+				// Try to send as media
+				err := s.sendMediaMessage(client, jid, att.DataURL, "")
+				if err != nil {
+					log.Error().Err(err).Msg("Failed to send media message, falling back to link")
+					attachmentMsg := fmt.Sprintf("📎 %s", att.DataURL)
+					s.sendTextMessage(client, jid, attachmentMsg)
+				}
 			}
 		} else {
 			if content != "" {
@@ -206,6 +214,96 @@ func (s *server) sendTextMessage(client *whatsmeow.Client, jid types.JID, conten
 		return err
 	}
 	return nil
+}
+
+func (s *server) sendMediaMessage(client *whatsmeow.Client, jid types.JID, url string, caption string) error {
+	log.Debug().Str("url", url).Msg("Downloading media for Chatwoot reply")
+
+	data, contentType, err := fetchURLBytes(context.Background(), url, 50*1024*1024) // 50MB limit
+	if err != nil {
+		return fmt.Errorf("failed to download media: %w", err)
+	}
+
+	// Detect type
+	mediaType := whatsmeow.MediaImage
+	if strings.HasPrefix(contentType, "video/") {
+		mediaType = whatsmeow.MediaVideo
+	} else if strings.HasPrefix(contentType, "audio/") {
+		mediaType = whatsmeow.MediaAudio
+	} else if strings.HasPrefix(contentType, "image/") {
+		mediaType = whatsmeow.MediaImage
+	} else {
+		mediaType = whatsmeow.MediaDocument
+	}
+
+	uploadResp, err := client.Upload(context.Background(), data, mediaType)
+	if err != nil {
+		return fmt.Errorf("failed to upload media to WhatsApp: %w", err)
+	}
+
+	msg := &waProto.Message{}
+
+	switch mediaType {
+	case whatsmeow.MediaImage:
+		msg.ImageMessage = &waProto.ImageMessage{
+			URL:           proto.String(uploadResp.URL),
+			DirectPath:    proto.String(uploadResp.DirectPath),
+			MediaKey:      uploadResp.MediaKey,
+			Mimetype:      proto.String(contentType),
+			FileEncSHA256: uploadResp.FileEncSHA256,
+			FileSHA256:    uploadResp.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(data))),
+			Caption:       proto.String(caption),
+		}
+	case whatsmeow.MediaVideo:
+		msg.VideoMessage = &waProto.VideoMessage{
+			URL:           proto.String(uploadResp.URL),
+			DirectPath:    proto.String(uploadResp.DirectPath),
+			MediaKey:      uploadResp.MediaKey,
+			Mimetype:      proto.String(contentType),
+			FileEncSHA256: uploadResp.FileEncSHA256,
+			FileSHA256:    uploadResp.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(data))),
+			Caption:       proto.String(caption),
+		}
+	case whatsmeow.MediaAudio:
+		msg.AudioMessage = &waProto.AudioMessage{
+			URL:           proto.String(uploadResp.URL),
+			DirectPath:    proto.String(uploadResp.DirectPath),
+			MediaKey:      uploadResp.MediaKey,
+			Mimetype:      proto.String(contentType),
+			FileEncSHA256: uploadResp.FileEncSHA256,
+			FileSHA256:    uploadResp.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(data))),
+			PTT:           proto.Bool(false), // Always false for now, treat as audio file
+		}
+	case whatsmeow.MediaDocument:
+		// Guess filename from URL or mime
+		filename := filepath.Base(url)
+		if filename == "." || filename == "/" {
+			exts, _ := mime.ExtensionsByType(contentType)
+			if len(exts) > 0 {
+				filename = "file" + exts[0]
+			} else {
+				filename = "file"
+			}
+		}
+
+		msg.DocumentMessage = &waProto.DocumentMessage{
+			URL:           proto.String(uploadResp.URL),
+			DirectPath:    proto.String(uploadResp.DirectPath),
+			MediaKey:      uploadResp.MediaKey,
+			Mimetype:      proto.String(contentType),
+			FileEncSHA256: uploadResp.FileEncSHA256,
+			FileSHA256:    uploadResp.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(data))),
+			FileName:      proto.String(filename),
+			Caption:       proto.String(caption),
+		}
+	}
+
+	_, err = client.SendMessage(context.Background(), jid, msg)
+	return err
 }
 
 // HandleChatwootWebhookByInstance processes webhooks using instance name (Evolution API compatible)
@@ -238,7 +336,7 @@ func (s *server) HandleChatwootWebhookByInstance() http.HandlerFunc {
 			Msg("Chatwoot webhook payload")
 
 		// Only process outgoing messages that are not private
-		if payload.Event != "message_created" || payload.MessageType != "outgoing" || payload.Private {
+		if !strings.EqualFold(payload.Event, "message_created") || !strings.EqualFold(payload.MessageType, "outgoing") || payload.Private {
 			s.Respond(w, r, http.StatusOK, "ignored")
 			return
 		}
@@ -356,8 +454,12 @@ func (s *server) HandleChatwootWebhookByInstance() http.HandlerFunc {
 				s.sendTextMessage(client, jid, content)
 			}
 			for _, att := range payload.Attachments {
-				attachmentMsg := fmt.Sprintf("📎 %s", att.DataURL)
-				s.sendTextMessage(client, jid, attachmentMsg)
+				err := s.sendMediaMessage(client, jid, att.DataURL, "")
+				if err != nil {
+					log.Error().Err(err).Msg("Failed to send media message, falling back to link")
+					attachmentMsg := fmt.Sprintf("📎 %s", att.DataURL)
+					s.sendTextMessage(client, jid, attachmentMsg)
+				}
 			}
 		} else {
 			if content != "" {

@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/rs/zerolog/log"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type ChatwootConfig struct {
@@ -161,7 +167,7 @@ func (s *server) HandleChatwootEvent(integration Integration, eventType string, 
 	}
 
 	// Only handle Message events containing message info
-	if eventType != "Message" {
+	if !strings.EqualFold(eventType, "Message") {
 		return
 	}
 
@@ -175,6 +181,7 @@ func (s *server) HandleChatwootEvent(integration Integration, eventType string, 
 	messageType, _ := data["messageType"].(string)
 
 	var senderJID string
+	// var messageID string
 	var fromMe bool
 
 	key, ok := data["key"].(map[string]interface{})
@@ -183,6 +190,9 @@ func (s *server) HandleChatwootEvent(integration Integration, eventType string, 
 		if rj, ok := key["remoteJid"].(string); ok {
 			senderJID = rj
 		}
+		// if mid, ok := key["id"].(string); ok {
+		// 	messageID = mid
+		// }
 		if fm, ok := key["fromMe"].(bool); ok {
 			fromMe = fm
 		}
@@ -252,6 +262,7 @@ func (s *server) HandleChatwootEvent(integration Integration, eventType string, 
 	// 3. Create Message
 	// Need to extract content based on type (text, image, etc.)
 	content := ""
+
 	msgContent, ok := data["message"].(map[string]interface{})
 	if ok {
 		if txt, ok := msgContent["conversation"].(string); ok {
@@ -260,20 +271,50 @@ func (s *server) HandleChatwootEvent(integration Integration, eventType string, 
 			if txt, ok := ext["text"].(string); ok {
 				content = txt
 			}
-		} else if img, ok := msgContent["imageMessage"].(map[string]interface{}); ok {
-			if caps, ok := img["caption"].(string); ok {
-				content = "📷 " + caps
+		} else if _, ok := msgContent["imageMessage"].(map[string]interface{}); ok {
+			// Handle Image
+			err = s.processAndSendMediaToChatwoot(meta, conversationID, data, "image", "imageMessage", integration.UserID)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to send image to Chatwoot")
+				content = "📷 [Erro ao enviar imagem]"
 			} else {
-				content = "📷 [Imagem]"
+				return // Sent as media
 			}
 		} else if _, ok := msgContent["videoMessage"].(map[string]interface{}); ok {
-			content = "🎥 [Vídeo]"
+			// Handle Video
+			err = s.processAndSendMediaToChatwoot(meta, conversationID, data, "video", "videoMessage", integration.UserID)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to send video to Chatwoot")
+				content = "🎥 [Erro ao enviar vídeo]"
+			} else {
+				return
+			}
 		} else if _, ok := msgContent["audioMessage"].(map[string]interface{}); ok {
-			content = "🎵 [Áudio]"
+			// Handle Audio
+			err = s.processAndSendMediaToChatwoot(meta, conversationID, data, "audio", "audioMessage", integration.UserID)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to send audio to Chatwoot")
+				content = "🎵 [Erro ao enviar áudio]"
+			} else {
+				return
+			}
 		} else if _, ok := msgContent["documentMessage"].(map[string]interface{}); ok {
-			content = "📄 [Documento]"
+			// Handle Document
+			err = s.processAndSendMediaToChatwoot(meta, conversationID, data, "file", "documentMessage", integration.UserID)
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to send document to Chatwoot")
+				content = "📄 [Erro ao enviar documento]"
+			} else {
+				return
+			}
 		} else if _, ok := msgContent["stickerMessage"].(map[string]interface{}); ok {
-			content = "🎨 [Sticker]"
+			// Handle Sticker
+			err = s.processAndSendMediaToChatwoot(meta, conversationID, data, "image", "stickerMessage", integration.UserID)
+			if err != nil {
+				content = "🎨 [Sticker]"
+			} else {
+				return
+			}
 		} else if loc, ok := msgContent["locationMessage"].(map[string]interface{}); ok {
 			lat, _ := loc["degreesLatitude"].(float64)
 			lng, _ := loc["degreesLongitude"].(float64)
@@ -299,7 +340,10 @@ func (s *server) HandleChatwootEvent(integration Integration, eventType string, 
 }
 
 func (s *server) findOrCreateChatwootContact(config ChatwootConfig, contact ChatwootContact) (int, error) {
+	// Replace all new Resty clients with one that has the header
 	client := resty.New()
+	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+
 	// Search Contact
 	resp, err := client.R().
 		SetHeader("api_access_token", config.Token).
@@ -348,7 +392,10 @@ func (s *server) findOrCreateChatwootConversation(config ChatwootConfig, conv Ch
 	// Actually Chatwoot API creates a new conversation every time unless we find one.
 	// Correct flow: Search conversations by contact_id. If open, use it. Else create.
 
+	// Replace all new Resty clients with one that has the header
 	client := resty.New()
+	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+
 	resp, err := client.R().
 		SetHeader("api_access_token", config.Token).
 		SetQueryParam("status", "open").
@@ -398,7 +445,10 @@ func (s *server) findOrCreateChatwootConversation(config ChatwootConfig, conv Ch
 }
 
 func (s *server) createChatwootMessage(config ChatwootConfig, conversationID int, msg ChatwootMessage) error {
+	// Replace all new Resty clients with one that has the header
 	client := resty.New()
+	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+
 	_, err := client.R().
 		SetHeader("api_access_token", config.Token).
 		SetBody(msg).
@@ -408,7 +458,9 @@ func (s *server) createChatwootMessage(config ChatwootConfig, conversationID int
 
 // CreateChatwootInbox creates a new API inbox in Chatwoot
 func (s *server) CreateChatwootInbox(config ChatwootConfig, name, webhookURL string) (int, error) {
+	// Replace all new Resty clients with one that has the header
 	client := resty.New()
+	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
 
 	// Payload for creating an API inbox
 	// POST /api/v1/accounts/{account_id}/inboxes
@@ -493,7 +545,10 @@ func (s *server) CreateChatwootManagerContact(config ChatwootConfig, instanceNam
 		},
 	}
 
+	// Replace all new Resty clients with one that has the header
 	client := resty.New()
+	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+
 	contactResp, err := client.R().
 		SetHeader("api_access_token", config.Token).
 		SetHeader("Content-Type", "application/json").
@@ -590,4 +645,142 @@ func (s *server) CreateChatwootManagerContact(config ChatwootConfig, instanceNam
 
 	log.Info().Int("contact_id", contactID).Int("conversation_id", conversationID).Str("instance", instanceName).Msg("Manager contact created successfully")
 	return contactID, conversationID, nil
+}
+
+// processAndSendMediaToChatwoot downloads media from message and sends to Chatwoot
+func (s *server) processAndSendMediaToChatwoot(config ChatwootConfig, conversationID int, data map[string]interface{}, fileType, msgType, userID string) error {
+	client := clientManager.GetWhatsmeowClient(userID)
+	if client == nil {
+		return fmt.Errorf("client not found for user %s", userID)
+	}
+
+	// 1. Reconstruct Message object
+	msgBytes, err := json.Marshal(data["message"])
+	if err != nil {
+		return fmt.Errorf("failed to marshal message data: %w", err)
+	}
+
+	var msg waE2E.Message
+	if err := protojson.Unmarshal(msgBytes, &msg); err != nil {
+		// Fallback: try standard unmarshal if keys match standard JSON
+		if err2 := json.Unmarshal(msgBytes, &msg); err2 != nil {
+			return fmt.Errorf("failed to unmarshal message: %v", err)
+		}
+	}
+
+	// 2. Download Media
+	var mediaData []byte
+	var errDownload error
+
+	switch msgType {
+	case "imageMessage":
+		if msg.ImageMessage != nil {
+			mediaData, errDownload = client.Download(context.Background(), msg.ImageMessage)
+		}
+	case "videoMessage":
+		if msg.VideoMessage != nil {
+			mediaData, errDownload = client.Download(context.Background(), msg.VideoMessage)
+		}
+	case "audioMessage":
+		if msg.AudioMessage != nil {
+			mediaData, errDownload = client.Download(context.Background(), msg.AudioMessage)
+		}
+	case "documentMessage":
+		if msg.DocumentMessage != nil {
+			mediaData, errDownload = client.Download(context.Background(), msg.DocumentMessage)
+		}
+	case "stickerMessage":
+		if msg.StickerMessage != nil {
+			mediaData, errDownload = client.Download(context.Background(), msg.StickerMessage)
+		}
+	default:
+		return fmt.Errorf("unsupported media type: %s", msgType)
+	}
+
+	if errDownload != nil {
+		// If download fails (e.g. timeout), try to fallback to sending text
+		return fmt.Errorf("failed to download media: %w", errDownload)
+	}
+
+	if len(mediaData) == 0 {
+		return fmt.Errorf("empty media data downloaded")
+	}
+
+	// 3. Determine Filename and Mime
+	// mimeType := http.DetectContentType(mediaData)
+	fileName := "file"
+	caption := ""
+
+	switch msgType {
+	case "imageMessage":
+		fileName = "image.jpg"
+		// if msg.ImageMessage.Mimetype != nil {
+		// 	mimeType = *msg.ImageMessage.Mimetype
+		// }
+		if msg.ImageMessage.Caption != nil {
+			caption = *msg.ImageMessage.Caption
+		}
+	case "videoMessage":
+		fileName = "video.mp4"
+		// if msg.VideoMessage.Mimetype != nil {
+		// 	mimeType = *msg.VideoMessage.Mimetype
+		// }
+		if msg.VideoMessage.Caption != nil {
+			caption = *msg.VideoMessage.Caption
+		}
+	case "audioMessage":
+		fileName = "audio.ogg"
+		// if msg.AudioMessage.Mimetype != nil {
+		// 	mimeType = *msg.AudioMessage.Mimetype
+		// }
+	case "documentMessage":
+		fileName = "document"
+		if msg.DocumentMessage.FileName != nil && *msg.DocumentMessage.FileName != "" {
+			fileName = *msg.DocumentMessage.FileName
+		}
+		// if msg.DocumentMessage.Mimetype != nil {
+		// 	mimeType = *msg.DocumentMessage.Mimetype
+		// }
+		if msg.DocumentMessage.Caption != nil {
+			caption = *msg.DocumentMessage.Caption
+		}
+	case "stickerMessage":
+		fileName = "sticker.webp"
+		// if msg.StickerMessage.Mimetype != nil {
+		// 	mimeType = *msg.StickerMessage.Mimetype
+		// }
+	}
+
+	// sanitize filename
+	fileName = filepath.Base(fileName)
+	if fileName == "." || fileName == "" {
+		fileName = "file"
+	}
+
+	// 4. Send to Chatwoot
+	restyClient := resty.New()
+	// Set timeout
+	restyClient.SetTimeout(30 * time.Second)
+
+	req := restyClient.R().
+		SetHeader("api_access_token", config.Token).
+		SetFileReader("attachments[]", fileName, bytes.NewReader(mediaData)).
+		SetFormData(map[string]string{
+			"content":      caption,
+			"message_type": "incoming",
+			"private":      "false",
+		})
+
+	resp, err := req.Post(fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages", config.URL, config.AccountID, conversationID))
+
+	if err != nil {
+		return fmt.Errorf("failed to upload to Chatwoot: %w", err)
+	}
+
+	if resp.StatusCode() >= 400 {
+		return fmt.Errorf("chatwoot API error: %d - %s", resp.StatusCode(), string(resp.Body()))
+	}
+
+	log.Debug().Str("type", msgType).Int("size", len(mediaData)).Msg("Media sent to Chatwoot successfully")
+	return nil
 }

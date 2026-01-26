@@ -194,9 +194,15 @@ func (s *server) authalice(next http.Handler) http.Handler {
 				ctx = context.WithValue(r.Context(), "userinfo", v)
 			}
 		} else {
-			ctx = context.WithValue(r.Context(), "userinfo", myuserinfo)
-			log.Info().Str("name", myuserinfo.(Values).Get("name")).Msg("User info name from Cache")
-			txtid = myuserinfo.(Values).Get("Id")
+			if v, ok := myuserinfo.(Values); ok {
+				ctx = context.WithValue(r.Context(), "userinfo", v)
+				log.Info().Str("name", v.Get("name")).Msg("User info name from Cache")
+				txtid = v.Get("Id")
+			} else {
+				log.Error().Msg("Invalid user info type in cache")
+				s.Respond(w, r, http.StatusUnauthorized, errors.New("invalid session"))
+				return
+			}
 		}
 
 		if txtid == "" {

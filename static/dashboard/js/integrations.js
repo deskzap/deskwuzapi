@@ -98,10 +98,14 @@ async function loadIntegrations() {
              </div>
           </td>
           <td>
-            <button class="ui tiny icon button" onclick="editIntegration(${integration.id})">
+            ${integration.type === 'chatwoot' ? 
+                `<button class="ui tiny icon purple button" onclick="testIntegration(${integration.id})" title="Test Connection">
+                  <i class="plug icon"></i>
+                </button>` : ''}
+            <button class="ui tiny icon button" onclick="editIntegration(${integration.id})" title="Edit">
               <i class="edit icon"></i>
             </button>
-            <button class="ui tiny icon red button" onclick="deleteIntegration(${integration.id})">
+            <button class="ui tiny icon red button" onclick="deleteIntegration(${integration.id})" title="Delete">
               <i class="trash icon"></i>
             </button>
           </td>
@@ -138,6 +142,9 @@ function openIntegrationEditor(mode = 'create', data = null) {
     document.getElementById('integrationId').value = data.id;
     document.getElementById('integrationName').value = data.name;
     $('#integrationType').dropdown('set selected', data.type);
+    // Force trigger type change handler to ensure UI updates
+    handleIntegrationTypeChange(data.type);
+
     document.getElementById('integrationUrl').value = data.url;
     document.getElementById('integrationToken').value = data.token;
     
@@ -343,6 +350,39 @@ async function deleteIntegration(id) {
         }
     } catch (e) {
         showError("Network error");
+    }
+}
+
+async function testIntegration(id) {
+    const token = getLocalStorageItem('token');
+    const myHeaders = new Headers();
+    myHeaders.append('token', token);
+
+    // Find button to show loading
+    const btn = document.querySelector(`button[onclick="testIntegration(${id})"]`);
+    if(btn) btn.classList.add('loading', 'disabled');
+
+    try {
+        const response = await fetch(baseUrl + `/session/integrations/${id}/test`, {
+            method: "POST",
+            headers: myHeaders
+        });
+        const result = await response.json();
+        
+        if (response.ok) {
+            if (result.success) {
+                showSuccess(result.message || "Connection successful!");
+            } else {
+                showError(result.message || "Connection failed");
+            }
+        } else {
+            showError(result.error || "Failed to test connection");
+        }
+    } catch (e) {
+        console.error("Test integration error:", e);
+        showError("Network error during test");
+    } finally {
+        if(btn) btn.classList.remove('loading', 'disabled');
     }
 }
 

@@ -20,6 +20,7 @@ require (
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.3
+	github.com/googollee/go-socket.io v1.7.0
 	github.com/justinas/alice v1.2.0
 	github.com/lib/pq v1.10.9
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
@@ -47,7 +48,6 @@ require (
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/gofrs/uuid v4.0.0+incompatible // indirect
 	github.com/gomodule/redigo v1.8.4 // indirect
-	github.com/googollee/go-socket.io v1.7.0 // indirect
 	github.com/gorilla/websocket v1.4.2 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/petermattis/goid v0.0.0-20250904145737-900bdf8bb490 // indirect

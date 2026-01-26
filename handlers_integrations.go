@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/go-resty/resty/v2"
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 )
@@ -47,7 +48,12 @@ func (s *server) CreateIntegrationHandler() http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		txtid := ""
+		if val := r.Context().Value("userinfo"); val != nil {
+			if v, ok := val.(Values); ok {
+				txtid = v.Get("Id")
+			}
+		}
 
 		var req createIntegrationRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -89,7 +95,7 @@ func (s *server) CreateIntegrationHandler() http.HandlerFunc {
 			nameRow := s.db.QueryRow("SELECT name FROM users WHERE id = ?", txtid)
 			nameRow.Scan(&instanceName)
 			if instanceName == "" {
-				instanceName = req.Name
+				instanceName = txtid
 			}
 
 			if config.AutoCreate && config.InboxID == 0 {
@@ -213,5 +219,72 @@ func (s *server) DeleteIntegrationHandler() http.HandlerFunc {
 		}
 
 		s.Respond(w, r, http.StatusOK, `{"status":"success"}`)
+	}
+}
+
+// TestIntegrationHandler tests an integration connection
+func (s *server) TestIntegrationHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		idStr := vars["id"]
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid integration ID"))
+			return
+		}
+
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		integration, err := s.GetIntegrationByID(id)
+		if err != nil {
+			s.Respond(w, r, http.StatusNotFound, errors.New("integration not found"))
+			return
+		}
+
+		// Verify ownership
+		if integration.UserID != txtid {
+			s.Respond(w, r, http.StatusForbidden, errors.New("forbidden"))
+			return
+		}
+
+		if integration.Type != "chatwoot" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("only chatwoot integrations can be tested currently"))
+			return
+		}
+
+		// Parse config
+		var config ChatwootConfig
+		if err := json.Unmarshal([]byte(integration.Meta), &config); err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("invalid configuration"))
+			return
+		}
+
+		// Test Connection by fetching account info
+		client := resty.New()
+		// Add User-Agent to avoid Cloudflare blocking
+		client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+		resp, err := client.R().
+			SetHeader("api_access_token", config.Token).
+			Get(fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", config.URL, config.AccountID))
+
+		if err != nil {
+			s.Respond(w, r, http.StatusOK, map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Network error: %v", err),
+			})
+			return
+		}
+
+		if resp.StatusCode() >= 400 {
+			s.Respond(w, r, http.StatusOK, map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("API Error: %d - %s", resp.StatusCode(), string(resp.Body())),
+			})
+			return
+		}
+
+		s.Respond(w, r, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"message": "Connection successful! Chatwoot API is reachable.",
+		})
 	}
 }
