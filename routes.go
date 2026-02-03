@@ -105,6 +105,7 @@ func (s *server) routes() {
 	s.router.Handle("/session/integrations/{id}", c.Then(s.DeleteIntegrationHandler())).Methods("DELETE")
 	s.router.Handle("/session/integrations/chatwoot/webhook", s.HandleChatwootWebhook()).Methods("POST")
 	s.router.Handle("/session/integrations/{id}/test", c.Then(s.TestIntegrationHandler())).Methods("POST")
+	s.router.Handle("/session/integrations/{id}/chatwoot-proxy", c.Then(s.ChatwootProxyHandler())).Methods("POST")
 
 	// Chatwoot webhook with instance name (Evolution API compatible)
 	s.router.Handle("/chatwoot/webhook/{instance}", s.HandleChatwootWebhookByInstance()).Methods("POST")
@@ -176,6 +177,11 @@ func (s *server) routes() {
 	s.router.Handle("/group/updateparticipants", c.Then(s.UpdateGroupParticipants())).Methods("POST")
 
 	s.router.Handle("/newsletter/list", c.Then(s.ListNewsletter())).Methods("GET")
+
+	// Debug route for Chatwoot payload
+	s.router.Handle("/chatwoot/payload-test", c.Then(s.HandleChatwootPayloadTest())).Methods("POST")
+	// Debug route for Chatwoot integration configuration
+	s.router.Handle("/chatwoot/debug/{instance}", s.HandleChatwootDebug()).Methods("GET")
 
 	s.router.PathPrefix("/").Handler(http.FileServer(http.Dir(exPath + "/static/")))
 }

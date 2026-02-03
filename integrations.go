@@ -67,16 +67,24 @@ func (s *server) GetIntegrationByID(integrationID int) (*Integration, error) {
 	return &integration, nil
 }
 
-// GetIntegrationByUserAndType fetches an integration by userID and type
+// GetIntegrationByUserAndType fetches an active integration by userID and type
+// Robust implementation: fetches all by type and filters in Go to avoid SQL boolean type issues
 func (s *server) GetIntegrationByUserAndType(userID string, integrationType string) (*Integration, error) {
-	var integration Integration
-	query := "SELECT * FROM integrations WHERE user_id = ? AND type = ? AND status = 1 ORDER BY created_at DESC LIMIT 1"
+	var integrations []Integration
+	query := "SELECT * FROM integrations WHERE user_id = ? AND type = ? ORDER BY created_at DESC"
 	query = s.db.Rebind(query)
-	err := s.db.Get(&integration, query, userID, integrationType)
+	err := s.db.Select(&integrations, query, userID, integrationType)
 	if err != nil {
 		return nil, err
 	}
-	return &integration, nil
+
+	for _, integration := range integrations {
+		if integration.Status {
+			return &integration, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no active integration found")
 }
 
 func (s *server) UpdateIntegration(userID string, integrationID int, name, url, token, events string, status bool, meta string) (*Integration, error) {

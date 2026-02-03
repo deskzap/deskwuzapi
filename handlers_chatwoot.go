@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"mime"
 	"path/filepath"
 
+	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
@@ -46,14 +49,30 @@ type ChatwootWebhookPayload struct {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	} `json:"sender"`
-	MessageType string `json:"message_type"`
-	Content     string `json:"content"`
-	Private     bool   `json:"private"`
-	Status      string `json:"status"`
+	MessageType interface{} `json:"message_type"` // Changed to interface{} to handle string or int
+	Content     string      `json:"content"`
+	Private     bool        `json:"private"`
+	Status      string      `json:"status"`
 	Attachments []struct {
 		FileType string `json:"file_type"`
 		DataURL  string `json:"data_url"`
 	} `json:"attachments"`
+}
+
+func (s *server) getString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case int:
+		return strconv.Itoa(val)
+	case float64:
+		return fmt.Sprintf("%.0f", val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 // HandleChatwootWebhook processes incoming webhooks from Chatwoot
@@ -79,13 +98,17 @@ func (s *server) HandleChatwootWebhook() http.HandlerFunc {
 
 		log.Debug().
 			Str("event", payload.Event).
-			Str("message_type", payload.MessageType).
+			Str("message_type", s.getString(payload.MessageType)).
 			Bool("private", payload.Private).
 			Str("content", payload.Content).
 			Msg("Chatwoot webhook received")
 
 		// Only process outgoing messages that are not private
-		if payload.Event != "message_created" || payload.MessageType != "outgoing" || payload.Private {
+		// Chatwoot sometimes sends message_type as 1 for outgoing, 0 for incoming. Or "outgoing"/"incoming"
+		msgType := s.getString(payload.MessageType)
+		isOutgoing := strings.EqualFold(msgType, "outgoing") || msgType == "1"
+
+		if payload.Event != "message_created" || !isOutgoing || payload.Private {
 			s.Respond(w, r, http.StatusOK, "ignored")
 			return
 		}
@@ -114,30 +137,7 @@ func (s *server) HandleChatwootWebhook() http.HandlerFunc {
 		}
 
 		// Determine Recipient
-		// Priority: Identifier (JID) -> PhoneNumber -> SourceID
-		phone := ""
-
-		// First, try to use Identifier which should contain the JID
-		identifier := payload.Conversation.Meta.Contact.Identifier
-		if identifier != "" && strings.Contains(identifier, "@") {
-			// It's a JID, extract the phone number
-			phone = extractPhoneNumber(identifier)
-		}
-
-		// Fallback to phone number
-		if phone == "" {
-			phone = payload.Conversation.Meta.Contact.PhoneNumber
-		}
-
-		// Last resort: SourceID
-		if phone == "" {
-			sourceID := payload.Conversation.ContactInbox.SourceID
-			if strings.Contains(sourceID, "@") {
-				phone = extractPhoneNumber(sourceID)
-			} else {
-				phone = sourceID
-			}
-		}
+		phone := s.extractPhoneFromPayload(payload)
 
 		if phone == "" {
 			log.Error().Msg("Chatwoot webhook: could not determine recipient phone")
@@ -330,13 +330,16 @@ func (s *server) HandleChatwootWebhookByInstance() http.HandlerFunc {
 
 		log.Debug().
 			Str("event", payload.Event).
-			Str("message_type", payload.MessageType).
+			Str("message_type", s.getString(payload.MessageType)).
 			Bool("private", payload.Private).
 			Str("content", payload.Content).
 			Msg("Chatwoot webhook payload")
 
 		// Only process outgoing messages that are not private
-		if !strings.EqualFold(payload.Event, "message_created") || !strings.EqualFold(payload.MessageType, "outgoing") || payload.Private {
+		msgType := s.getString(payload.MessageType)
+		isOutgoing := strings.EqualFold(msgType, "outgoing") || msgType == "1"
+
+		if !strings.EqualFold(payload.Event, "message_created") || !isOutgoing || payload.Private {
 			s.Respond(w, r, http.StatusOK, "ignored")
 			return
 		}
@@ -345,7 +348,13 @@ func (s *server) HandleChatwootWebhookByInstance() http.HandlerFunc {
 		var userID string
 		var qrCode string
 		var connected bool
-		row := s.db.QueryRow("SELECT id, qrcode, connected FROM users WHERE name = ? LIMIT 1", instanceName)
+
+		query := "SELECT id, qrcode, connected FROM users WHERE name = ? LIMIT 1"
+		if s.db.DriverName() == "postgres" {
+			query = "SELECT id, qrcode, connected FROM users WHERE name = $1 LIMIT 1"
+		}
+
+		row := s.db.QueryRow(query, instanceName)
 		err := row.Scan(&userID, &qrCode, &connected)
 		if err != nil {
 			log.Error().Err(err).Str("instance", instanceName).Msg("Chatwoot webhook: instance not found")
@@ -476,28 +485,48 @@ func (s *server) HandleChatwootWebhookByInstance() http.HandlerFunc {
 func (s *server) extractPhoneFromPayload(payload ChatwootWebhookPayload) string {
 	phone := ""
 
-	// First, try to use Identifier which should contain the JID
-	identifier := payload.Conversation.Meta.Contact.Identifier
-	if identifier != "" && strings.Contains(identifier, "@") {
-		phone = extractPhoneNumber(identifier)
+	// 1. Try PhoneNumber from Contact Meta (Primary source)
+	if p := payload.Conversation.Meta.Contact.PhoneNumber; p != "" {
+		phone = p
 	}
 
-	// Fallback to phone number
+	// 2. Try Identifier
 	if phone == "" {
-		phone = payload.Conversation.Meta.Contact.PhoneNumber
-	}
-
-	// Last resort: SourceID
-	if phone == "" {
-		sourceID := payload.Conversation.ContactInbox.SourceID
-		if strings.Contains(sourceID, "@") {
-			phone = extractPhoneNumber(sourceID)
-		} else {
-			phone = sourceID
+		identifier := payload.Conversation.Meta.Contact.Identifier
+		if identifier != "" {
+			if strings.Contains(identifier, "@") {
+				// Try to extract from JID if it looks like one (e.g. contains @s.whatsapp.net)
+				extracted := extractPhoneNumber(identifier)
+				if extracted != "" {
+					phone = extracted
+				} else if !strings.Contains(identifier, "whatsapp.net") {
+					// If it has @ but NOT whatsapp.net, it might be an email -> Ignore
+					// But if it is like "12345@c.us", we might want it?
+					// Safer to ignore if extractPhoneNumber failed and it has @
+				}
+			} else {
+				// If no @, assume it is just the raw number
+				phone = identifier
+			}
 		}
 	}
 
-	// Clean phone number
+	// 3. Last resort: SourceID
+	if phone == "" {
+		sourceID := payload.Conversation.ContactInbox.SourceID
+		if sourceID != "" {
+			if strings.Contains(sourceID, "@") {
+				extracted := extractPhoneNumber(sourceID)
+				if extracted != "" {
+					phone = extracted
+				}
+			} else {
+				phone = sourceID
+			}
+		}
+	}
+
+	// Clean phone number (keep only digits)
 	cleanPhone := ""
 	for _, c := range phone {
 		if c >= '0' && c <= '9' {
@@ -610,7 +639,7 @@ func (s *server) isManagerContact(payload ChatwootWebhookPayload) bool {
 
 // isManagerCommand checks if the message is a valid manager command
 func (s *server) isManagerCommand(command string) bool {
-	validCommands := []string{"status", "connect", "qr", "disconnect", "help", "desconectar", "conectar", "ajuda"}
+	validCommands := []string{"status", "connect", "qr", "disconnect", "help", "desconectar", "conectar", "ajuda", "restart", "logout", "sair", "info", "ping"}
 	for _, cmd := range validCommands {
 		if command == cmd {
 			return true
@@ -632,6 +661,14 @@ func (s *server) handleManagerCommand(w http.ResponseWriter, r *http.Request, me
 		response = s.handleQRCommand(userID, instanceName, meta, conversationID)
 	case "disconnect", "desconectar":
 		response = s.handleDisconnectCommand(userID, userToken, instanceName)
+	case "logout", "sair":
+		response = s.handleLogoutCommand(userID, instanceName)
+	case "restart":
+		response = s.handleRestartCommand(userID, instanceName)
+	case "info":
+		response = s.handleInfoCommand(userID, instanceName)
+	case "ping":
+		response = s.handlePingCommand(userID)
 	case "help", "ajuda":
 		response = s.handleHelpCommand(instanceName)
 	default:
@@ -763,6 +800,90 @@ func (s *server) handleDisconnectCommand(userID, userToken, instanceName string)
 		"A sessão foi mantida. Use `connect` para reconectar sem escanear QR novamente.", instanceName)
 }
 
+// handleLogoutCommand logs out the device
+func (s *server) handleLogoutCommand(userID, instanceName string) string {
+	client := clientManager.GetWhatsmeowClient(userID)
+
+	if client != nil {
+		if client.IsLoggedIn() {
+			err := client.Logout(context.Background())
+			if err != nil {
+				log.Error().Err(err).Msg("Failed to logout via manager command")
+				return fmt.Sprintf("❌ Erro ao realizar logout: %v", err)
+			}
+		}
+		// Disconnect if still connected
+		if client.IsConnected() {
+			client.Disconnect()
+		}
+	}
+
+	// Clean up client manager
+	clientManager.DeleteWhatsmeowClient(userID)
+	clientManager.DeleteMyClient(userID)
+	clientManager.DeleteHTTPClient(userID)
+
+	// Update database
+	s.db.Exec("UPDATE users SET connected = 0, qrcode = '', history = 0 WHERE id = ?", userID)
+
+	// Send kill signal
+	select {
+	case killchannel[userID] <- true:
+	default:
+	}
+
+	return fmt.Sprintf("👋 **Instância '%s' deslogada com sucesso!**\n\n"+
+		"Sessão removida. Para usar novamente, envie `connect` e escaneie um novo QR Code.", instanceName)
+}
+
+// handleRestartCommand restarts the connection
+func (s *server) handleRestartCommand(userID, instanceName string) string {
+	client := clientManager.GetWhatsmeowClient(userID)
+
+	if client != nil {
+		client.Disconnect()
+		time.Sleep(1 * time.Second)
+		err := client.Connect()
+		if err != nil {
+			return fmt.Sprintf("❌ Erro ao reconectar: %v", err)
+		}
+	} else {
+		return "⚠️ Cliente não encontrado ou não inicializado. Use `connect`."
+	}
+
+	return fmt.Sprintf("🔄 **Instância '%s' reiniciada!**\n\n"+
+		"A conexão foi restabelecida. Use `status` para verificar.", instanceName)
+}
+
+// handleInfoCommand returns device info
+func (s *server) handleInfoCommand(userID, instanceName string) string {
+	client := clientManager.GetWhatsmeowClient(userID)
+
+	if client == nil || !client.IsLoggedIn() {
+		return fmt.Sprintf("ℹ️ **Instância '%s'**\n\nStatus: Desconectado/Deslogado", instanceName)
+	}
+
+	me := client.Store.ID
+	if me == nil {
+		return "⚠️ Informações do dispositivo indisponíveis."
+	}
+
+	pushName := "Desconhecido"
+	// Try to get pushname from store if available or cache
+	// (Whatsmeow Store logic varies)
+
+	return fmt.Sprintf("📱 **Informações do Dispositivo - '%s'**\n\n"+
+		"👤 **Nome**: %s\n"+
+		"📞 **JID**: %s\n"+
+		"🆔 **Device ID**: %d",
+		instanceName, pushName, me.ToNonAD().String(), me.Device)
+}
+
+// handlePingCommand returns a simple pong
+func (s *server) handlePingCommand(userID string) string {
+	return "🏓 **Pong!**\n\nA API está online e respondendo."
+}
+
 // handleHelpCommand returns the help message
 func (s *server) handleHelpCommand(instanceName string) string {
 	return fmt.Sprintf("📋 **Comandos disponíveis - Instância '%s'**\n\n"+
@@ -770,6 +891,265 @@ func (s *server) handleHelpCommand(instanceName string) string {
 		"• `connect` - Iniciar conexão e gerar QR Code\n"+
 		"• `qr` - Gerar novo QR Code\n"+
 		"• `disconnect` - Desconectar sessão (mantém login)\n"+
+		"• `restart` - Reiniciar conexão\n"+
+		"• `logout` - Deslogar e apagar sessão\n"+
+		"• `info` - Ver informações do dispositivo\n"+
+		"• `ping` - Teste de latência/resposta\n"+
 		"• `help` - Mostrar esta ajuda\n\n"+
 		"💡 **Dica**: Quando desconectado, envie qualquer mensagem para receber ajuda.", instanceName)
+}
+
+// HandleChatwootPayloadTest receives a webhook and returns the parsed analysis for debugging
+func (s *server) HandleChatwootPayloadTest() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Read body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, map[string]string{"error": "Failed to read body"})
+			return
+		}
+		defer r.Body.Close()
+
+		// Parse standard
+		var payload ChatwootWebhookPayload
+		var parseError string
+		if err := json.Unmarshal(body, &payload); err != nil {
+			parseError = err.Error()
+		}
+
+		// Parse as generic map for full comparison
+		var rawMap map[string]interface{}
+		json.Unmarshal(body, &rawMap)
+
+		// Analyze headers
+		headers := make(map[string]string)
+		for k, v := range r.Header {
+			headers[k] = strings.Join(v, ", ")
+		}
+
+		response := map[string]interface{}{
+			"headers":       headers,
+			"raw_body_len":  len(body),
+			"raw_body":      string(body),
+			"parsed_struct": payload,
+			"parse_error":   parseError,
+			"analysis": map[string]interface{}{
+				"event":        payload.Event,
+				"message_type": s.getString(payload.MessageType),
+				"private":      payload.Private,
+				"content":      payload.Content,
+				"account_id":   payload.Account.ID,
+				"inbox_id":     payload.Inbox.ID,
+			},
+		}
+
+		s.Respond(w, r, http.StatusOK, response)
+	}
+}
+
+// HandleChatwootDebug returns debug information about Chatwoot integration configuration
+// GET /chatwoot/debug/{instance}
+func (s *server) HandleChatwootDebug() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Recover from any panics
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Error().Interface("panic", rec).Msg("[CHATWOOT DEBUG] Panic recovered")
+				s.Respond(w, r, http.StatusInternalServerError, map[string]interface{}{
+					"status": "error",
+					"error":  fmt.Sprintf("Internal error: %v", rec),
+				})
+			}
+		}()
+
+		// Extract instance name from URL path using Gorilla Mux vars
+		vars := mux.Vars(r)
+		instanceName := vars["instance"]
+		if instanceName == "" {
+			// Fallback to path parsing
+			path := r.URL.Path
+			parts := strings.Split(path, "/")
+			if len(parts) >= 4 {
+				instanceName = parts[len(parts)-1]
+			}
+		}
+
+		if instanceName == "" {
+			s.Respond(w, r, http.StatusBadRequest, map[string]string{"error": "missing instance name"})
+			return
+		}
+
+		log.Info().Str("instance", instanceName).Msg("[CHATWOOT DEBUG] Starting debug check")
+
+		// Find user by instance name
+		var userID string
+		var connected bool
+		query := "SELECT id, connected FROM users WHERE name = ? LIMIT 1"
+		if s.db.DriverName() == "postgres" {
+			query = "SELECT id, connected FROM users WHERE name = $1 LIMIT 1"
+		}
+
+		row := s.db.QueryRow(query, instanceName)
+		err := row.Scan(&userID, &connected)
+		if err != nil {
+			log.Error().Err(err).Str("instance", instanceName).Msg("[CHATWOOT DEBUG] Instance not found")
+			s.Respond(w, r, http.StatusNotFound, map[string]interface{}{
+				"status":   "error",
+				"message":  "Instance not found",
+				"instance": instanceName,
+			})
+			return
+		}
+
+		// Find Chatwoot integration for this user
+		integration, err := s.GetIntegrationByUserAndType(userID, "chatwoot")
+
+		debugResult := map[string]interface{}{
+			"instance":       instanceName,
+			"user_id":        userID,
+			"user_connected": connected,
+			"timestamp":      time.Now().Format(time.RFC3339),
+		}
+
+		if err != nil {
+			debugResult["integration_status"] = "not_found"
+			debugResult["integration_error"] = err.Error()
+			debugResult["recommendation"] = "Cadastre uma integração Chatwoot no dashboard"
+			s.Respond(w, r, http.StatusOK, debugResult)
+			return
+		}
+
+		debugResult["integration_id"] = integration.ID
+		debugResult["integration_name"] = integration.Name
+		debugResult["integration_status"] = integration.Status
+		debugResult["integration_events"] = integration.Events
+
+		// Parse and validate Meta config
+		var meta ChatwootConfig
+		if err := json.Unmarshal([]byte(integration.Meta), &meta); err != nil {
+			debugResult["meta_parse_error"] = err.Error()
+			debugResult["meta_raw"] = integration.Meta
+			s.Respond(w, r, http.StatusOK, debugResult)
+			return
+		}
+
+		// Config details (hide token)
+		tokenMask := "***"
+		if len(meta.Token) > 6 {
+			tokenMask = meta.Token[:3] + "***" + meta.Token[len(meta.Token)-3:]
+		}
+
+		debugResult["config"] = map[string]interface{}{
+			"url":                   meta.URL,
+			"account_id":            meta.AccountID,
+			"inbox_id":              meta.InboxID,
+			"inbox_name":            meta.InboxName,
+			"token_masked":          tokenMask,
+			"enabled":               meta.Enabled,
+			"sign_messages":         meta.SignMessages,
+			"reopen_conversation":   meta.ReopenConversation,
+			"conversation_pending":  meta.ConversationPending,
+			"merge_brazil_contacts": meta.MergeBrazilContacts,
+		}
+
+		// Validate configuration
+		issues := []string{}
+		if !integration.Status {
+			issues = append(issues, "Integração está desativada no banco (status=false)")
+		}
+		if !meta.Enabled {
+			issues = append(issues, "Integração está desabilitada no meta config (enabled=false)")
+		}
+		if meta.URL == "" {
+			issues = append(issues, "URL do Chatwoot não configurada")
+		}
+		if meta.AccountID == "" {
+			issues = append(issues, "Account ID não configurado")
+		}
+		if meta.Token == "" {
+			issues = append(issues, "Token não configurado")
+		}
+		if meta.InboxID == 0 {
+			issues = append(issues, "Inbox ID não configurado (será usado default=1)")
+		}
+
+		// Check if Message event is subscribed
+		events := strings.Split(integration.Events, ",")
+		hasMessageEvent := false
+		for _, e := range events {
+			e = strings.TrimSpace(strings.ToLower(e))
+			if e == "message" || e == "all" {
+				hasMessageEvent = true
+				break
+			}
+		}
+		if !hasMessageEvent {
+			issues = append(issues, "Evento 'Message' não está na lista de eventos assinados")
+		}
+
+		debugResult["issues"] = issues
+		debugResult["issues_count"] = len(issues)
+
+		if len(issues) == 0 {
+			debugResult["health"] = "OK"
+			debugResult["message"] = "Configuração parece correta. Se mensagens não estão chegando, verifique os logs do servidor."
+		} else {
+			debugResult["health"] = "ISSUES_FOUND"
+			debugResult["message"] = "Foram encontrados problemas na configuração. Corrija os issues listados."
+		}
+
+		// Test API connectivity (optional - only if config is complete)
+		if meta.URL != "" && meta.AccountID != "" && meta.Token != "" {
+			testResult := s.testChatwootAPIConnection(meta)
+			debugResult["api_test"] = testResult
+		}
+
+		s.Respond(w, r, http.StatusOK, debugResult)
+	}
+}
+
+// testChatwootAPIConnection tests connectivity to Chatwoot API
+func (s *server) testChatwootAPIConnection(config ChatwootConfig) map[string]interface{} {
+	result := map[string]interface{}{
+		"tested_at": time.Now().Format(time.RFC3339),
+	}
+
+	// Test by fetching inboxes (requires valid token)
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/inboxes", strings.TrimSuffix(config.URL, "/"), config.AccountID)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		result["status"] = "error"
+		result["error"] = "Failed to create request: " + err.Error()
+		return result
+	}
+
+	req.Header.Set("api_access_token", config.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		result["status"] = "error"
+		result["error"] = "Connection failed: " + err.Error()
+		result["url_tested"] = url
+		return result
+	}
+	defer resp.Body.Close()
+
+	result["status_code"] = resp.StatusCode
+	result["url_tested"] = url
+
+	if resp.StatusCode == 200 {
+		result["status"] = "success"
+		result["message"] = "API connection successful"
+	} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		result["status"] = "auth_error"
+		result["message"] = "Authentication failed - check your token"
+	} else {
+		result["status"] = "error"
+		result["message"] = fmt.Sprintf("Unexpected status code: %d", resp.StatusCode)
+	}
+
+	return result
 }

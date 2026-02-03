@@ -941,6 +941,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			MediaDelivery string `db:"media_delivery"`
 		}
 
+		// Fix JID: Extract physical phone number, ignoring LIDs
+		evt.Info.Sender = extractPhysicalJID(&evt.Info)
+
 		lastMessageCache.Set(mycli.userID, &evt.Info, cache.DefaultExpiration)
 		myuserinfo, found := userinfocache.Get(mycli.token)
 		if !found {
@@ -2138,4 +2141,58 @@ func (c *MyClient) SendText(phone string, body string) (string, error) {
 	}
 
 	return resp.ID, nil
+}
+
+// extractPhysicalJID analyzes MessageInfo to find the correct physical JID (phone number)
+// ensuring LIDs are ignored and standard @s.whatsapp.net JIDs are prioritized.
+func extractPhysicalJID(info *types.MessageInfo) types.JID {
+	// Candidates to check
+	candidates := []types.JID{
+		info.Chat,
+		info.Sender,
+	}
+
+	// Iterate and find the first valid physical JID
+	for _, jid := range candidates {
+		if jid.IsEmpty() {
+			continue
+		}
+
+		// Skip LIDs
+		if jid.Server == "lid" {
+			continue
+		}
+
+		// Accept standard whatsapp user JIDs
+		if jid.Server == types.DefaultUserServer {
+			// Basic validation: User part should be numeric
+			isNumeric := true
+			for _, c := range jid.User {
+				if c < '0' || c > '9' {
+					isNumeric = false
+					break
+				}
+			}
+			if isNumeric {
+				return jid
+			}
+		}
+	}
+
+	// Fallback: If no "clean" JID found, return Sender original (better than nothing)
+	// But ideally we should have found one.
+	// If Chat is a Group, Sender might be the LID if configured so?
+	// Usually Sender in Group is the participant.
+
+	// If we are here, maybe it's a group message and we need to check Sender again strictly?
+	// For now, return Sender as fallback if it's not a LID, otherwise Chat if not LID.
+
+	if info.Sender.Server == types.DefaultUserServer {
+		return info.Sender
+	}
+	if info.Chat.Server == types.DefaultUserServer {
+		return info.Chat
+	}
+
+	return info.Sender
 }

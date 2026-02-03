@@ -43,10 +43,16 @@ function initIntegrations() {
 
 function handleIntegrationTypeChange(type) {
   const chatwootFields = document.getElementById('chatwootFields');
+  // Attempt to find the container of the generic token field
+  const tokenInput = document.getElementById('integrationToken');
+  const tokenField = tokenInput ? tokenInput.closest('.field') : null;
+  
   if (type === 'chatwoot') {
     chatwootFields.style.display = 'block';
+    if(tokenField) tokenField.style.display = 'none';
   } else {
     chatwootFields.style.display = 'none';
+    if(tokenField) tokenField.style.display = 'block';
   }
 }
 
@@ -224,7 +230,7 @@ async function saveIntegration() {
   const name = document.getElementById('integrationName').value;
   const type = $('#integrationType').dropdown('get value');
   let url = document.getElementById('integrationUrl').value;
-  const tokenStr = document.getElementById('integrationToken').value; // Integration Token (optional)
+  let tokenStr = document.getElementById('integrationToken').value; // Integration Token (optional)
   const events = $('#integrationEvents').dropdown('get value'); // returns array
   const eventsStr = Array.isArray(events) ? events.join(',') : events;
 
@@ -235,6 +241,8 @@ async function saveIntegration() {
         showError("Chatwoot URL is required");
         return;
     }
+    // Force sync of generic token with Chatwoot token to avoid DB mismatch/duplication
+    tokenStr = document.getElementById('cwToken').value;
   }
 
   if (!name || !type || !url || !eventsStr) {
@@ -363,26 +371,226 @@ async function testIntegration(id) {
     if(btn) btn.classList.add('loading', 'disabled');
 
     try {
-        const response = await fetch(baseUrl + `/session/integrations/${id}/test`, {
-            method: "POST",
+        // Fetch integration details first
+        const response = await fetch(baseUrl + "/session/integrations", {
+            method: "GET",
             headers: myHeaders
         });
         const result = await response.json();
+        const integrations = result.data?.integrations || result.integrations || [];
+        const integration = integrations.find(i => i.id === id);
         
-        if (response.ok) {
-            if (result.success) {
-                showSuccess(result.message || "Connection successful!");
-            } else {
-                showError(result.message || "Connection failed");
-            }
-        } else {
-            showError(result.error || "Failed to test connection");
+        if (!integration || integration.type !== 'chatwoot') {
+            showError("Integration not found or not a Chatwoot type");
+            return;
         }
+
+        // Parse meta to get Chatwoot config
+        const meta = JSON.parse(integration.meta || '{}');
+        
+        // Store integration data for the test modal
+        document.getElementById('cwTestIntegrationId').value = id;
+        document.getElementById('cwTestUrl').textContent = meta.url || integration.url || '-';
+        document.getElementById('cwTestAccount').textContent = meta.account_id || '-';
+        document.getElementById('cwTestInbox').textContent = `ID: ${meta.inbox_id || 'não configurado'} / Nome: ${meta.inbox_name || '-'}`;
+        
+        // Store meta for later use
+        window.cwTestMeta = meta;
+        
+        // Reset form
+        document.getElementById('cwTestResult').style.display = 'none';
+        document.getElementById('cwTestSteps').style.display = 'none';
+        document.getElementById('cwTestStepsList').innerHTML = '';
+        
+        // Show modal
+        $('#modalChatwootTest').modal('show');
+        
     } catch (e) {
         console.error("Test integration error:", e);
-        showError("Network error during test");
+        showError("Error loading integration: " + e.message);
     } finally {
         if(btn) btn.classList.remove('loading', 'disabled');
+    }
+}
+
+// Chatwoot Test Helper Functions
+function cwTestAddStep(message, status = 'info') {
+    const stepsList = document.getElementById('cwTestStepsList');
+    document.getElementById('cwTestSteps').style.display = 'block';
+    
+    const icons = {
+        'info': 'info circle blue',
+        'success': 'check circle green',
+        'error': 'times circle red',
+        'loading': 'spinner loading'
+    };
+    
+    const item = document.createElement('div');
+    item.className = 'item';
+    item.innerHTML = `<i class="${icons[status]} icon"></i><div class="content">${message}</div>`;
+    stepsList.appendChild(item);
+    stepsList.scrollTop = stepsList.scrollHeight;
+}
+
+function cwTestShowResult(isSuccess, message, data = null) {
+    const resultDiv = document.getElementById('cwTestResult');
+    const contentDiv = document.getElementById('cwTestResultContent');
+    resultDiv.style.display = 'block';
+    
+    const className = isSuccess ? 'ui success message' : 'ui error message';
+    let content = `<div class="${className}"><div class="header">${isSuccess ? 'Sucesso!' : 'Erro'}</div><p>${message}</p>`;
+    
+    if (data) {
+        content += `<pre style="font-size: 0.85em; overflow-x: auto;">${JSON.stringify(data, null, 2)}</pre>`;
+    }
+    content += '</div>';
+    contentDiv.innerHTML = content;
+}
+
+async function executeChatwootTest() {
+    const btn = document.getElementById('btnChatwootTestSend');
+    btn.classList.add('loading', 'disabled');
+    
+    const meta = window.cwTestMeta;
+    const phone = document.getElementById('cwTestPhone').value.trim();
+    const message = document.getElementById('cwTestMessage').value.trim();
+    
+    // Validation
+    if (!phone || phone.length < 10) {
+        showError('Informe um telefone válido (código país + DDD + número)');
+        btn.classList.remove('loading', 'disabled');
+        return;
+    }
+    
+    if (!message) {
+        showError('Informe uma mensagem');
+        btn.classList.remove('loading', 'disabled');
+        return;
+    }
+    
+    const integrationId = document.getElementById('cwTestIntegrationId').value;
+    const inboxId = meta.inbox_id;
+    
+    if (!integrationId) {
+        showError('Integration ID não encontrado');
+        btn.classList.remove('loading', 'disabled');
+        return;
+    }
+    
+    // Reset
+    document.getElementById('cwTestStepsList').innerHTML = '';
+    document.getElementById('cwTestResult').style.display = 'none';
+    
+    // Helper function to call the proxy endpoint
+    async function chatwootProxy(method, path, body = null) {
+        const token = getLocalStorageItem('token');
+        const headers = new Headers();
+        headers.append('token', token);
+        headers.append('Content-Type', 'application/json');
+        
+        const payload = { method, path };
+        if (body) payload.body = body;
+        
+        const response = await fetch(`${baseUrl}/session/integrations/${integrationId}/chatwoot-proxy`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload)
+        });
+        
+        return response.json();
+    }
+    
+    try {
+        // Step 1: Search for contact
+        cwTestAddStep(`Buscando contato com telefone ${phone}...`, 'loading');
+        
+        const searchData = await chatwootProxy('GET', `/contacts/search?q=${phone}`);
+        
+        let contactId = null;
+        let contactName = '';
+        
+        if (searchData.data && searchData.data.payload && searchData.data.payload.length > 0) {
+            contactId = searchData.data.payload[0].id;
+            contactName = searchData.data.payload[0].name || phone;
+            cwTestAddStep(`Contato encontrado: ${contactName} (ID: ${contactId})`, 'success');
+        } else {
+            // Create contact
+            cwTestAddStep('Contato não encontrado, criando novo...', 'loading');
+            
+            const createContactData = await chatwootProxy('POST', '/contacts', {
+                inbox_id: inboxId || 1,
+                name: `Teste ${phone}`,
+                phone_number: `+${phone}`,
+                identifier: `${phone}@s.whatsapp.net`
+            });
+            
+            if (createContactData.data && createContactData.data.payload && createContactData.data.payload.contact && createContactData.data.payload.contact.id) {
+                contactId = createContactData.data.payload.contact.id;
+                contactName = createContactData.data.payload.contact.name;
+                cwTestAddStep(`Contato criado: ${contactName} (ID: ${contactId})`, 'success');
+            } else {
+                throw new Error('Falha ao criar contato: ' + JSON.stringify(createContactData));
+            }
+        }
+        
+        // Step 2: Find or create conversation
+        cwTestAddStep(`Buscando conversa do contato na inbox ${inboxId || 1}...`, 'loading');
+        
+        const convData = await chatwootProxy('GET', `/contacts/${contactId}/conversations`);
+        
+        let conversationId = null;
+        
+        // Find conversation in the target inbox
+        if (convData.data && convData.data.payload && convData.data.payload.length > 0) {
+            const targetConv = convData.data.payload.find(c => c.inbox_id === (inboxId || 1));
+            if (targetConv) {
+                conversationId = targetConv.id;
+                cwTestAddStep(`Conversa existente encontrada (ID: ${conversationId})`, 'success');
+            }
+        }
+        
+        if (!conversationId) {
+            // Create conversation
+            cwTestAddStep('Criando nova conversa...', 'loading');
+            
+            const createConvData = await chatwootProxy('POST', '/conversations', {
+                inbox_id: inboxId || 1,
+                contact_id: contactId,
+                status: 'open'
+            });
+            
+            conversationId = createConvData.data ? createConvData.data.id : createConvData.id; // Fallback
+            cwTestAddStep(`Conversa criada (ID: ${conversationId})`, 'success');
+        }
+        
+        // Step 3: Send message
+        cwTestAddStep(`Enviando mensagem para conversa ${conversationId}...`, 'loading');
+        
+        const msgData = await chatwootProxy('POST', `/conversations/${conversationId}/messages`, {
+            content: message,
+            message_type: 'incoming',
+            private: false
+        });
+        
+        if (msgData.data && msgData.data.id) {
+            cwTestAddStep(`Mensagem enviada com sucesso! (ID: ${msgData.data.id})`, 'success');
+            cwTestShowResult(true, `Mensagem enviada para o Chatwoot!`, {
+                message_id: msgData.data.id,
+                conversation_id: conversationId,
+                contact_id: contactId,
+                inbox_id: inboxId || 1,
+                via_proxy: true
+            });
+        } else {
+            throw new Error('Resposta inesperada: ' + JSON.stringify(msgData));
+        }
+        
+    } catch (error) {
+        console.error('Chatwoot test error:', error);
+        cwTestAddStep(`Erro: ${error.message}`, 'error');
+        cwTestShowResult(false, error.message);
+    } finally {
+        btn.classList.remove('loading', 'disabled');
     }
 }
 
@@ -436,6 +644,15 @@ async function toggleIntegrationStatus(id, newStatus) {
     }
 }
 
+// Bind Chatwoot test button
+document.addEventListener('DOMContentLoaded', function() {
+    const btnTest = document.getElementById('btnChatwootTestSend');
+    if (btnTest) {
+        btnTest.addEventListener('click', executeChatwootTest);
+    }
+});
+
+
 // Copy webhook URL to clipboard
 function copyWebhookUrl() {
     const webhookInput = document.getElementById('cwWebhookUrl');
@@ -457,3 +674,4 @@ function copyWebhookUrl() {
 }
 
 document.addEventListener('DOMContentLoaded', initIntegrations);
+

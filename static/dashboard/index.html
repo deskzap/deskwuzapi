@@ -1398,6 +1398,10 @@
             <i class="dropdown icon"></i>
             <div class="default text">Select Events</div>
             <div class="menu">
+              <div class="item" data-value="Message">Message</div>
+              <div class="item" data-value="UndecryptableMessage">Undecryptable Message</div>
+              <div class="item" data-value="Receipt">Receipt</div>
+            </div>
               <option class="item" data-value="Message">Message</option>
               <option class="item" data-value="MessageStatus">MessageStatus</option>
               <option class="item" data-value="Presence">Presence</option>
@@ -1557,7 +1561,65 @@
     </div>
   </div>
 
+  <!-- Chatwoot Test Modal -->
+  <div class="ui small modal" id="modalChatwootTest">
+    <i class="close icon"></i>
+    <div class="header">
+      <i class="whatsapp icon green"></i>
+      Testar Integração Chatwoot
+    </div>
+    <div class="content">
+      <div class="ui form" id="chatwootTestForm">
+        <input type="hidden" id="cwTestIntegrationId">
+        
+        <!-- Integration Info -->
+        <div class="ui info message" id="cwTestInfo">
+          <div class="header">Configuração detectada</div>
+          <p>
+            <strong>URL:</strong> <span id="cwTestUrl">-</span><br>
+            <strong>Account:</strong> <span id="cwTestAccount">-</span><br>
+            <strong>Inbox:</strong> <span id="cwTestInbox">-</span>
+          </p>
+        </div>
+
+        <div class="field">
+          <label>Telefone (formato completo)</label>
+          <div class="ui left icon input">
+            <i class="phone icon"></i>
+            <input type="text" id="cwTestPhone" placeholder="5527999999999" maxlength="15">
+          </div>
+          <small class="text muted">Número com código do país (55) + DDD + número</small>
+        </div>
+
+        <div class="field">
+          <label>Mensagem de Teste</label>
+          <textarea id="cwTestMessage" rows="3" placeholder="Digite sua mensagem de teste...">🧪 Mensagem de teste enviada via DeskWuzapi!</textarea>
+        </div>
+
+        <!-- Status/Response Area -->
+        <div class="ui segment" id="cwTestResult" style="display: none;">
+          <h5 class="ui header">Resultado</h5>
+          <div id="cwTestResultContent"></div>
+        </div>
+
+        <!-- Steps Log -->
+        <div class="ui segment" id="cwTestSteps" style="display: none; max-height: 200px; overflow-y: auto;">
+          <h5 class="ui header"><i class="list icon"></i> Passos Executados</h5>
+          <div class="ui small relaxed list" id="cwTestStepsList"></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="ui black deny button">Fechar</div>
+      <div class="ui green right labeled icon button" id="btnChatwootTestSend">
+        <i class="paper plane icon"></i>
+        Enviar Teste
+      </div>
+    </div>
+  </div>
+
   <!-- Socket.IO Debugger Modal -->
+
   <div class="ui modal" id="modalSocketDebugger">
     <i class="close icon"></i>
     <div class="header">

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/gorilla/mux"
@@ -92,7 +93,11 @@ func (s *server) CreateIntegrationHandler() http.HandlerFunc {
 
 			// Get instance name from user
 			var instanceName string
-			nameRow := s.db.QueryRow("SELECT name FROM users WHERE id = ?", txtid)
+			query := "SELECT name FROM users WHERE id = ?"
+			if s.db.DriverName() == "postgres" {
+				query = "SELECT name FROM users WHERE id = $1"
+			}
+			nameRow := s.db.QueryRow(query, txtid)
 			nameRow.Scan(&instanceName)
 			if instanceName == "" {
 				instanceName = txtid
@@ -286,5 +291,121 @@ func (s *server) TestIntegrationHandler() http.HandlerFunc {
 			"success": true,
 			"message": "Connection successful! Chatwoot API is reachable.",
 		})
+	}
+}
+
+// ChatwootProxyHandler proxies requests to Chatwoot API to avoid CORS issues
+func (s *server) ChatwootProxyHandler() http.HandlerFunc {
+	type proxyRequest struct {
+		Method string                 `json:"method"` // GET, POST, PUT, DELETE
+		Path   string                 `json:"path"`   // e.g., /contacts/search?q=551234567890
+		Body   map[string]interface{} `json:"body,omitempty"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		idStr := vars["id"]
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid integration ID"))
+			return
+		}
+
+		txtid := r.Context().Value("userinfo").(Values).Get("Id")
+		integration, err := s.GetIntegrationByID(id)
+		if err != nil {
+			s.Respond(w, r, http.StatusNotFound, errors.New("integration not found"))
+			return
+		}
+
+		// Verify ownership
+		if integration.UserID != txtid {
+			s.Respond(w, r, http.StatusForbidden, errors.New("forbidden"))
+			return
+		}
+
+		if integration.Type != "chatwoot" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("only chatwoot integrations support proxy"))
+			return
+		}
+
+		// Parse config
+		var config ChatwootConfig
+		if err := json.Unmarshal([]byte(integration.Meta), &config); err != nil {
+			s.Respond(w, r, http.StatusInternalServerError, errors.New("invalid configuration"))
+			return
+		}
+
+		// Parse request
+		var req proxyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("invalid request body"))
+			return
+		}
+
+		if req.Path == "" {
+			s.Respond(w, r, http.StatusBadRequest, errors.New("path is required"))
+			return
+		}
+
+		// Sanitize config
+		config.Token = strings.TrimSpace(config.Token)
+		config.URL = strings.TrimSpace(config.URL)
+		config.AccountID = strings.TrimSpace(config.AccountID)
+
+		// Build target URL
+		targetURL := fmt.Sprintf("%s/api/v1/accounts/%s%s", config.URL, config.AccountID, req.Path)
+		log.Info().
+			Str("targetURL", targetURL).
+			Str("method", req.Method).
+			Str("token", config.Token). // DEBUG: log token being used
+			Str("accountId", config.AccountID).
+			Msg("[CHATWOOT PROXY] Forwarding request")
+
+		// Create resty client
+		client := resty.New()
+		client.SetDebug(true) // Enable debug logging
+		client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+		client.SetHeader("api_access_token", config.Token)
+		client.SetHeader("Content-Type", "application/json")
+
+		var resp *resty.Response
+		request := client.R()
+
+		switch req.Method {
+		case "GET", "":
+			resp, err = request.Get(targetURL)
+		case "POST":
+			if req.Body != nil {
+				request.SetBody(req.Body)
+			}
+			resp, err = request.Post(targetURL)
+		case "PUT":
+			if req.Body != nil {
+				request.SetBody(req.Body)
+			}
+			resp, err = request.Put(targetURL)
+		case "DELETE":
+			resp, err = request.Delete(targetURL)
+		default:
+			s.Respond(w, r, http.StatusBadRequest, errors.New("unsupported method"))
+			return
+		}
+
+		if err != nil {
+			log.Error().Err(err).Str("url", targetURL).Msg("[CHATWOOT PROXY] Request failed")
+			errResp, _ := json.Marshal(map[string]interface{}{
+				"error":   "proxy_error",
+				"message": err.Error(),
+			})
+			s.Respond(w, r, http.StatusBadGateway, string(errResp))
+			return
+		}
+
+		// Return the response from Chatwoot
+		log.Info().Int("status", resp.StatusCode()).Str("body", string(resp.Body())).Msg("[CHATWOOT PROXY] Response received")
+
+		// Return as-is if already valid JSON, otherwise wrap as string
+		s.Respond(w, r, resp.StatusCode(), string(resp.Body()))
 	}
 }

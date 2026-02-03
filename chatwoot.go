@@ -143,26 +143,53 @@ type ChatwootConversation struct {
 	AdditionalAttributes map[string]interface{} `json:"additional_attributes,omitempty"`
 }
 
+// truncateString truncates a string to maxLen characters, adding "..." if truncated
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
+}
+
 // HandleChatwootEvent routes incoming Wuzapi events to Chatwoot logic
 func (s *server) HandleChatwootEvent(integration Integration, eventType string, payload map[string]interface{}) {
-	log.Debug().Str("integration", integration.Name).Str("event", eventType).Msg("Handling Chatwoot event")
+	log.Info().
+		Str("integration", integration.Name).
+		Int("integration_id", integration.ID).
+		Str("event", eventType).
+		Str("user_id", integration.UserID).
+		Msg("[CHATWOOT] Processing event for integration")
 
 	// Parse Meta config
 	var meta ChatwootConfig
 	if err := json.Unmarshal([]byte(integration.Meta), &meta); err != nil {
-		log.Error().Err(err).Msg("Failed to parse Chatwoot meta config")
+		log.Error().Err(err).Str("meta", integration.Meta).Msg("[CHATWOOT] Failed to parse meta config")
 		return
 	}
 
+	log.Debug().
+		Str("url", meta.URL).
+		Str("account_id", meta.AccountID).
+		Int("inbox_id", meta.InboxID).
+		Bool("enabled", meta.Enabled).
+		Msg("[CHATWOOT] Parsed config")
+
 	// Check if integration is enabled
 	if !meta.Enabled {
-		log.Debug().Msg("Chatwoot integration is disabled")
+		log.Warn().Str("integration", integration.Name).Msg("[CHATWOOT] Integration is disabled in meta config")
 		return
 	}
 
 	// Basic validation
 	if meta.URL == "" || meta.AccountID == "" || meta.Token == "" {
-		log.Warn().Msg("Incomplete Chatwoot configuration")
+		log.Error().
+			Bool("has_url", meta.URL != "").
+			Bool("has_account_id", meta.AccountID != "").
+			Bool("has_token", meta.Token != "").
+			Msg("[CHATWOOT] Incomplete configuration - missing required fields")
 		return
 	}
 
@@ -344,20 +371,38 @@ func (s *server) findOrCreateChatwootContact(config ChatwootConfig, contact Chat
 	client := resty.New()
 	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
 
-	// Search Contact
+	// 1. Search Contact first to avoid duplicates
+	// Prefer searching by Identifier (JID) as it is unique and avoids formatting issues
+	query := contact.Identifier
+	if query == "" {
+		query = contact.PhoneNumber
+	}
+
 	resp, err := client.R().
 		SetHeader("api_access_token", config.Token).
-		SetQueryParam("q", contact.PhoneNumber).
+		SetQueryParam("q", query).
 		Get(fmt.Sprintf("%s/api/v1/accounts/%s/contacts/search", config.URL, config.AccountID))
 
 	if err != nil {
-		return 0, err
+		log.Warn().Err(err).Str("phone", contact.PhoneNumber).Msg("Chatwoot contact search failed, proceeding to create")
+	} else {
+		// Parse search result
+		var searchResult struct {
+			Payload []struct {
+				ID int `json:"id"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(resp.Body(), &searchResult); err == nil {
+			if len(searchResult.Payload) > 0 {
+				log.Debug().Int("id", searchResult.Payload[0].ID).Str("phone", contact.PhoneNumber).Msg("Chatwoot contact found")
+				return searchResult.Payload[0].ID, nil
+			}
+		} else {
+			log.Warn().Err(err).Msg("Failed to parse Chatwoot search response")
+		}
 	}
 
-	// Parse search result... handling JSON is verbose in Go without proper structs
-	// Assuming 0 results -> Create
-	// For brevity/MVP, I'll attempt create directly. Chatwoot might dedupe or I need to handle error.
-
+	// 2. Create if not found
 	resp, err = client.R().
 		SetHeader("api_access_token", config.Token).
 		SetBody(contact).
@@ -407,11 +452,19 @@ func (s *server) findOrCreateChatwootConversation(config ChatwootConfig, conv Ch
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(resp.Body(), &result); err == nil {
-		if payload, ok := result["payload"].([]interface{}); ok && len(payload) > 0 {
-			// Found open existing
-			if first, ok := payload[0].(map[string]interface{}); ok {
-				if id, ok := first["id"].(float64); ok {
-					return int(id), nil
+		if payload, ok := result["payload"].([]interface{}); ok {
+			// Iterate to find one in the correct Inbox
+			for _, item := range payload {
+				if convMap, ok := item.(map[string]interface{}); ok {
+					// Check if status is open
+					if status, ok := convMap["status"].(string); ok && status == "open" {
+						// Check inbox_id
+						if iID, ok := convMap["inbox_id"].(float64); ok && int(iID) == conv.InboxID {
+							if id, ok := convMap["id"].(float64); ok {
+								return int(id), nil
+							}
+						}
+					}
 				}
 			}
 		}
@@ -448,12 +501,42 @@ func (s *server) createChatwootMessage(config ChatwootConfig, conversationID int
 	// Replace all new Resty clients with one that has the header
 	client := resty.New()
 	client.SetHeader("User-Agent", "Mozilla/5.0 (Compatible; Wuzapi/1.0)")
+	// Add retry for robustness
+	client.SetRetryCount(3).SetRetryWaitTime(1 * time.Second)
 
-	_, err := client.R().
+	url := fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages", config.URL, config.AccountID, conversationID)
+
+	log.Info().
+		Str("url", url).
+		Int("conversation_id", conversationID).
+		Str("content_preview", truncateString(msg.Content, 50)).
+		Msg("[CHATWOOT] Sending message to Chatwoot")
+
+	resp, err := client.R().
 		SetHeader("api_access_token", config.Token).
 		SetBody(msg).
-		Post(fmt.Sprintf("%s/api/v1/accounts/%s/conversations/%d/messages", config.URL, config.AccountID, conversationID))
-	return err
+		Post(url)
+
+	if err != nil {
+		log.Error().Err(err).Str("url", url).Msg("[CHATWOOT] Failed to send message - network error")
+		return err
+	}
+
+	if resp.StatusCode() >= 400 {
+		log.Error().
+			Int("status_code", resp.StatusCode()).
+			Str("response", string(resp.Body())).
+			Str("url", url).
+			Msg("[CHATWOOT] Failed to send message - API error")
+		return fmt.Errorf("chatwoot API error: status %d, body: %s", resp.StatusCode(), string(resp.Body()))
+	}
+
+	log.Info().
+		Int("status_code", resp.StatusCode()).
+		Int("conversation_id", conversationID).
+		Msg("[CHATWOOT] Message sent successfully")
+
+	return nil
 }
 
 // CreateChatwootInbox creates a new API inbox in Chatwoot
@@ -760,7 +843,9 @@ func (s *server) processAndSendMediaToChatwoot(config ChatwootConfig, conversati
 	// 4. Send to Chatwoot
 	restyClient := resty.New()
 	// Set timeout
+	// Set timeout and retry
 	restyClient.SetTimeout(30 * time.Second)
+	restyClient.SetRetryCount(3).SetRetryWaitTime(1 * time.Second)
 
 	req := restyClient.R().
 		SetHeader("api_access_token", config.Token).
